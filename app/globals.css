@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  --bg-from: #0f172a;
+  --bg-to: #1e3a5f;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-border: rgba(255, 255, 255, 0.12);
+  --accent: #38bdf8;
+  --accent-hover: #0ea5e9;
+}
+
+body {
+  min-height: 100vh;
+  background: linear-gradient(
+    160deg,
+    var(--bg-from) 0%,
+    var(--bg-to) 45%,
+    #0c1222 100%
+  );
+  color: #e2e8f0;
+}

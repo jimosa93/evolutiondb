@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  remote_jid         String    @id @map("remote_jid")
+  interaction_date   DateTime? @default(now()) @map("interaction_date") @db.Timestamptz(6)
+  current_session_id String?   @map("current_session_id")
+  contact_name       String?   @map("contact_name")
+  status_horario     String?   @map("status_horario")
+  createdAt          DateTime? @default(dbgenerated("((now() AT TIME ZONE 'UTC'::text) AT TIME ZONE 'America/Bogota'::text)")) @map("createdAt") @db.Timestamptz(6)
+
+  @@map("users")
+}
