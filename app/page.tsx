@@ -1,6 +1,7 @@
 import type { User } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 
+import { logoutAction } from "@/app/actions/auth-actions";
 import { ClearInteractionButton } from "@/app/components/ClearInteractionButton";
 import { Pagination } from "@/app/components/Pagination";
 import { SearchForm } from "@/app/components/SearchForm";
@@ -29,34 +30,22 @@ function UserCard({ user }: { user: User }) {
     <article className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 shadow-lg backdrop-blur-sm md:hidden">
       <dl className="space-y-3 text-sm">
         <div>
-          <dt className="text-xs uppercase tracking-wide text-slate-500">remote_jid</dt>
+          <dt className="text-xs uppercase tracking-wide text-slate-500">Número de celular</dt>
           <dd className="mt-0.5 break-all font-mono text-slate-100">{user.remote_jid}</dd>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Interacción</dt>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Última interacción</dt>
             <dd className="mt-0.5 text-slate-200">{formatDateTime(user.interaction_date)}</dd>
           </div>
           <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Creado</dt>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Fecha de creación</dt>
             <dd className="mt-0.5 text-slate-200">{formatDateTime(user.createdAt)}</dd>
           </div>
         </div>
         <div>
-          <dt className="text-xs uppercase tracking-wide text-slate-500">Sesión</dt>
-          <dd className="mt-0.5 break-all font-mono text-xs text-slate-300">
-            {user.current_session_id ?? "—"}
-          </dd>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Contacto</dt>
-            <dd className="mt-0.5 text-slate-200">{user.contact_name ?? "—"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Horario</dt>
-            <dd className="mt-0.5 text-slate-200">{user.status_horario ?? "—"}</dd>
-          </div>
+          <dt className="text-xs uppercase tracking-wide text-slate-500">Nombre de contacto</dt>
+          <dd className="mt-0.5 text-slate-200">{user.contact_name ?? "—"}</dd>
         </div>
       </dl>
       <div className="mt-4 border-t border-white/10 pt-4">
@@ -69,26 +58,20 @@ function UserCard({ user }: { user: User }) {
 function UsersTable({ users }: { users: User[] }) {
   return (
     <div className="hidden overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.03] shadow-xl backdrop-blur-md md:block">
-      <table className="w-full min-w-[880px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[640px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-white/10 bg-slate-900/60">
             <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              remote_jid
+              Número de celular
             </th>
             <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              interaction_date
+              Última interacción
             </th>
             <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              current_session_id
+              Nombre de contacto
             </th>
             <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              contact_name
-            </th>
-            <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              status_horario
-            </th>
-            <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
-              createdAt
+              Fecha de creación
             </th>
             <th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-300">
               Acción
@@ -109,11 +92,7 @@ function UsersTable({ users }: { users: User[] }) {
               <td className="whitespace-nowrap px-4 py-3 text-slate-200">
                 {formatDateTime(user.interaction_date)}
               </td>
-              <td className="max-w-[160px] px-4 py-3 font-mono text-xs text-slate-400">
-                <span className="break-all">{user.current_session_id ?? "—"}</span>
-              </td>
               <td className="px-4 py-3 text-slate-200">{user.contact_name ?? "—"}</td>
-              <td className="px-4 py-3 text-slate-300">{user.status_horario ?? "—"}</td>
               <td className="whitespace-nowrap px-4 py-3 text-slate-300">
                 {formatDateTime(user.createdAt)}
               </td>
@@ -158,17 +137,26 @@ export default async function HomePage({
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <header className="mb-10 text-center sm:text-left">
-        <p className="text-sm font-medium uppercase tracking-wider text-sky-400/90">
-          Evolution DB
-        </p>
-        <h1 className="mt-1 text-3xl font-bold tracking-tight text-white sm:text-4xl">
-          Tabla <code className="rounded-md bg-white/10 px-2 py-0.5 font-mono text-2xl text-sky-300">users</code>
-        </h1>
-        <p className="mt-3 max-w-2xl text-slate-400">
-          Lista de registros con filtro por <strong className="text-slate-300">remote_jid</strong> y opción de dejar en{" "}
-          <strong className="text-slate-300">null</strong> la fecha de interacción.
-        </p>
+      <header className="mb-10 flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="text-center sm:text-left">
+          <p className="text-sm font-medium uppercase tracking-wider text-sky-400/90">
+            Evolution DB
+          </p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight text-white sm:text-4xl">
+            Tabla <code className="rounded-md bg-white/10 px-2 py-0.5 font-mono text-2xl text-sky-300">users</code>
+          </h1>
+          <p className="mt-3 max-w-2xl text-slate-400">
+            Lista de registros con filtro por <strong className="text-slate-300">número de celular</strong> y opción de eliminar la fecha de la última interacción.
+          </p>
+        </div>
+        <form action={logoutAction} className="flex shrink-0 justify-center sm:justify-end">
+          <button
+            type="submit"
+            className="rounded-xl border border-white/15 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/10"
+          >
+            Cerrar sesión
+          </button>
+        </form>
       </header>
 
       <section className="mb-8 rounded-2xl border border-white/10 bg-white/[0.05] p-5 shadow-xl backdrop-blur-md sm:p-6">
@@ -211,7 +199,7 @@ export default async function HomePage({
         <Pagination query={queryForHref} page={page} totalPages={totalPages} />
 
         <p className="mt-8 text-center text-xs text-slate-500">
-          Solo lectura y borrado de <span className="font-mono text-slate-400">interaction_date</span>.{" "}
+          Solo lectura y borrado de la última interacción.{" "}
           <a href={buildListHref(queryForHref, page)} className="text-sky-500/80 hover:text-sky-400">
             Actualizar lista
           </a>

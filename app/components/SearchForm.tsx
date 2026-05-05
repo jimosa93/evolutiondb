@@ -13,7 +13,7 @@ export function SearchForm({ defaultQuery }: SearchFormProps) {
     >
       <div className="min-w-0 flex-1">
         <label htmlFor="q" className="mb-1.5 block text-sm font-medium text-slate-300">
-          Filtrar por <span className="text-sky-400">remote_jid</span>
+          Filtrar por <span className="text-sky-400">número de celular</span>
         </label>
         <input
           id="q"
