@@ -8,6 +8,13 @@ export async function middleware(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   const authenticated = await verifySessionToken(token);
 
+  if (pathname.startsWith("/api/")) {
+    if (!authenticated) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return NextResponse.next();
+  }
+
   if (pathname === "/login") {
     if (authenticated) {
       return NextResponse.redirect(new URL("/", request.url));
