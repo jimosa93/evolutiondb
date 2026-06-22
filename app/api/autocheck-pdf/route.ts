@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 import { requireApiAuth } from "@/lib/api-auth";
+import { getAutocheckPdfOutputFileName } from "@/lib/autocheckPdfFileName";
 import { processAutocheckPdf } from "@/lib/processAutocheckPdf";
 
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
@@ -41,15 +42,17 @@ export async function POST(request: NextRequest) {
 
   try {
     const inputBytes = new Uint8Array(await file.arrayBuffer());
-    const outputBytes = await processAutocheckPdf(inputBytes, file.name);
-    const baseName = file.name.replace(/\.pdf$/i, "");
-    const outputName = `${baseName}-autocheck.pdf`;
+    const outputBytes = await processAutocheckPdf(inputBytes, file.name, {
+      includeModel2020Notice: formData.get("includeModel2020Notice") === "true",
+      includeContactNumbers: formData.get("includeContactNumbers") === "true",
+    });
+    const outputName = getAutocheckPdfOutputFileName(file.name);
 
     return new NextResponse(Buffer.from(outputBytes), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${outputName}"`,
+        "Content-Disposition": `attachment; filename="${outputName}"; filename*=UTF-8''${encodeURIComponent(outputName)}`,
         "Cache-Control": "no-store",
       },
     });

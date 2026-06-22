@@ -2,6 +2,8 @@
 
 import { useRef, useState } from "react";
 
+import { getAutocheckPdfOutputFileName } from "@/lib/autocheckPdfFileName";
+
 function redirectIfUnauthorized(res: Response) {
   if (res.status === 401) {
     window.location.href = "/login";
@@ -10,13 +12,11 @@ function redirectIfUnauthorized(res: Response) {
   return false;
 }
 
-function getOutputFileName(originalName: string) {
-  return `${originalName.replace(/\.pdf$/i, "")}-autocheck.pdf`;
-}
-
 export function AutocheckPdfPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [includeModel2020Notice, setIncludeModel2020Notice] = useState(false);
+  const [includeContactNumbers, setIncludeContactNumbers] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -41,6 +41,8 @@ export function AutocheckPdfPanel() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
+      formData.append("includeModel2020Notice", String(includeModel2020Notice));
+      formData.append("includeContactNumbers", String(includeContactNumbers));
 
       const response = await fetch("/api/autocheck-pdf", {
         method: "POST",
@@ -59,7 +61,7 @@ export function AutocheckPdfPanel() {
 
       const blob = await response.blob();
       const downloadUrl = URL.createObjectURL(blob);
-      const outputName = getOutputFileName(selectedFile.name);
+      const outputName = getAutocheckPdfOutputFileName(selectedFile.name);
       const anchor = document.createElement("a");
       anchor.href = downloadUrl;
       anchor.download = outputName;
@@ -80,6 +82,8 @@ export function AutocheckPdfPanel() {
 
   function handleReset() {
     setSelectedFile(null);
+    setIncludeModel2020Notice(false);
+    setIncludeContactNumbers(false);
     setError(null);
     setSuccessMessage(null);
     if (fileInputRef.current) {
@@ -136,6 +140,44 @@ export function AutocheckPdfPanel() {
                 Formatos aceptados: PDF. Tamaño máximo: 25 MB.
               </p>
             )}
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-slate-950/35 p-4">
+            <p className="text-sm font-semibold text-slate-100">Opciones del encabezado</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-slate-900/50 p-3 text-sm text-slate-300 transition hover:border-sky-400/40">
+                <input
+                  type="checkbox"
+                  checked={includeModel2020Notice}
+                  onChange={(event) => setIncludeModel2020Notice(event.target.checked)}
+                  disabled={processing}
+                  className="mt-0.5 h-4 w-4 rounded border-white/20 bg-slate-950 text-sky-500 focus:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span>
+                  <span className="block font-medium text-slate-100">Modelo 2020</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-slate-400">
+                    Agrega &quot;Siniestros y reclamaciones 2020 en adelante.&quot; debajo de
+                    Histórica Reciente.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-slate-900/50 p-3 text-sm text-slate-300 transition hover:border-sky-400/40">
+                <input
+                  type="checkbox"
+                  checked={includeContactNumbers}
+                  onChange={(event) => setIncludeContactNumbers(event.target.checked)}
+                  disabled={processing}
+                  className="mt-0.5 h-4 w-4 rounded border-white/20 bg-slate-950 text-sky-500 focus:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span>
+                  <span className="block font-medium text-slate-100">Números de contacto</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-slate-400">
+                    Agrega &quot;Contacto: 310 5523591 - 312 4095620&quot; debajo de la fecha.
+                  </span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm text-slate-300">

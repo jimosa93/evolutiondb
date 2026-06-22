@@ -88,6 +88,13 @@ type PdfTextItem = {
   y: number;
 };
 
+type PdfImageItem = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type KeyValue = {
   label: string;
   value: string;
@@ -153,6 +160,7 @@ type RelatedPeople = {
   note: string;
   current: RelatedPerson[];
   previous: RelatedPerson[];
+  general: RelatedPerson[];
 };
 
 type ValuationReport = {
@@ -208,6 +216,7 @@ type VehicleReport = {
   insuredValueHistory: InsuredValueRow[];
   sourceLayout: {
     vehicleHeadingY?: number;
+    vehiclePreviewAvailable?: boolean;
   };
 };
 
@@ -221,6 +230,11 @@ type TextStyle = {
   size?: number;
   color?: ReturnType<typeof rgb>;
   lineHeight?: number;
+};
+
+type AutocheckPdfOptions = {
+  includeModel2020Notice?: boolean;
+  includeContactNumbers?: boolean;
 };
 
 function normalizeText(text: string) {
@@ -282,6 +296,21 @@ function sliceBetweenPrefix(tokens: string[], startPrefix: string, endCandidates
   return tokens.slice(startIndex + 1, endIndex >= 0 ? endIndex : undefined);
 }
 
+function extractRelatedPeopleSection(tokens: string[]) {
+  const startIndex = tokens.findIndex((value) =>
+    value === "Personas Relacionadas" || value.startsWith("Personas Relacionadas ("),
+  );
+  if (startIndex < 0) {
+    return [];
+  }
+
+  const restartIndex = tokens.findIndex((value, index) =>
+    index > startIndex && (value === "Básica" || value === "Premium"),
+  );
+
+  return tokens.slice(startIndex + 1, restartIndex >= 0 ? restartIndex : undefined);
+}
+
 function firstMatchValue(text: string, pattern: RegExp, fallback = "No disponible") {
   return text.match(pattern)?.[0] ?? fallback;
 }
@@ -328,7 +357,7 @@ function collectMoneyAfter(tokens: string[], index: number) {
       continue;
     }
 
-    if (/^\d+$/.test(token) || token === "." || /^[\d.,]+$/.test(token)) {
+    if (/^-?\d+$/.test(token) || token === "." || /^-?[\d.,]+$/.test(token)) {
       started = true;
       parts.push(token);
       continue;
@@ -357,7 +386,7 @@ function collectMoneyBefore(tokens: string[], index: number) {
       started = true;
       break;
     }
-    if (/^\d+$/.test(token) || token === "." || /^[\d.,]+$/.test(token)) {
+    if (/^-?\d+$/.test(token) || token === "." || /^-?[\d.,]+$/.test(token)) {
       parts.unshift(token);
       started = true;
       continue;
@@ -592,6 +621,15 @@ function parsePersonEntries(section: string[], group: RelatedPerson["group"]) {
     "ACTUALMENTE VINCULADOS",
     "HISTORIAL ANTERIOR",
     "Datos referenciales",
+    "Términos y Condiciones",
+    "Privacidad",
+    "Privacidad • Ayuda",
+    "Soporte",
+    "¡",
+    "Operación exitosa",
+    "JUAN",
+    "Básica",
+    "Premium",
   ]);
 
   for (let index = 0; index < section.length; index += 1) {
@@ -600,15 +638,24 @@ function parsePersonEntries(section: string[], group: RelatedPerson["group"]) {
     }
 
     const nextIndex = section.findIndex((value, candidateIndex) =>
-      candidateIndex > index && (value === "Persona" || value === "Empresa" || stopLabels.has(value)),
+      candidateIndex > index &&
+      (
+        stopLabels.has(value) ||
+        (value === "1" && section[candidateIndex + 1] === "JUAN") ||
+        ((value === "Persona" || value === "Empresa") && candidateIndex !== index + 2)
+      ),
     );
     const block = section.slice(index, nextIndex >= 0 ? nextIndex : undefined);
-    const roles = block.filter((value) => ["Asegurado", "Tomadore", "Beneficiario", "Empresa"].includes(value));
-    const period = block.find((value) => /^\d{4}-\d{4}$/.test(value)) ?? "";
+    const roles = uniqueKeepOrder(block.filter((value, valueIndex) =>
+      valueIndex > 0 && ["Asegurado", "Tomadore", "Beneficiario", "Empresa"].includes(value),
+    ));
+    const periodIndex = block.findIndex((value) => /^\d{4}(-\d{4})?$/.test(value));
+    const period = periodIndex >= 0 ? block[periodIndex] : "";
     const policyIndex = block.findIndex((value) => /pólizas/i.test(value));
     const nameEndIndex = block.findIndex((value, valueIndex) =>
-      valueIndex > 1 && (value === "✓" || value === "Vigente" || roles.includes(value) || /^\d{4}-\d{4}$/.test(value)),
+      valueIndex > 1 && (value === "✓" || value === "Vigente" || roles.includes(value) || /^\d{4}(-\d{4})?$/.test(value)),
     );
+    const insurerStartIndex = policyIndex >= 0 ? policyIndex + 1 : periodIndex >= 0 ? periodIndex + 1 : -1;
 
     entries.push({
       group,
@@ -620,8 +667,10 @@ function parsePersonEntries(section: string[], group: RelatedPerson["group"]) {
       policies: policyIndex >= 0
         ? (/^\d+\s+pólizas/i.test(block[policyIndex]) ? block[policyIndex] : `${block[policyIndex - 1] ?? ""} ${block[policyIndex]}`.trim())
         : "",
-      insurer: policyIndex >= 0 ? block.slice(policyIndex + 1).filter((value) => value !== "·").join(" ") : "",
+      insurer: insurerStartIndex >= 0 ? block.slice(insurerStartIndex).filter((value) => value !== "·").join(" ") : "",
     });
+
+    index = nextIndex >= 0 ? nextIndex - 1 : section.length;
   }
 
   return entries;
@@ -642,7 +691,12 @@ function parseRelatedPeople(section: string[]): RelatedPeople {
     });
   const note = section.find((value) => value.startsWith("Vinculadas al historial")) ?? "";
   const currentSection = sliceBetween(section, "ACTUALMENTE VINCULADOS", ["HISTORIAL ANTERIOR", "Datos referenciales"]);
-  const previousSection = sliceBetween(section, "HISTORIAL ANTERIOR", ["Datos referenciales"]);
+  const previousStartIndex = findTokenIndex(section, "HISTORIAL ANTERIOR");
+  const previousSection = previousStartIndex >= 0 ? section.slice(previousStartIndex + 1) : [];
+  const noteIndex = note ? findTokenIndex(section, note) : -1;
+  const generalSection = currentSection.length === 0 && previousSection.length === 0 && noteIndex >= 0
+    ? section.slice(noteIndex + 1)
+    : [];
 
   return {
     summary,
@@ -650,6 +704,7 @@ function parseRelatedPeople(section: string[]): RelatedPeople {
     note,
     current: parsePersonEntries(currentSection, "current"),
     previous: parsePersonEntries(previousSection, "previous"),
+    general: parsePersonEntries(generalSection, "previous"),
   };
 }
 
@@ -874,7 +929,7 @@ function parseReport(
   const insuranceSection = sliceBetween(tokens, "Seguro Todo Riesgo", NEXT_OPTIONAL_SECTIONS);
   const healthInsuranceSection = sliceBetween(tokens, "Salud Aseguradora", ["Historial de Valor Asegurado"]);
   const riskCategoriesSection = sliceBetween(tokens, "Resumen de Riesgos por Categoría", ["Personas Relacionadas"]);
-  const relatedPeopleSection = sliceBetween(tokens, "Personas Relacionadas", ["Datos referenciales"]);
+  const relatedPeopleSection = extractRelatedPeopleSection(tokens);
   const claimsSection = sliceBetweenPrefix(tokens, "Análisis de Siniestralidad", ["Salud Aseguradora", "Historial de Valor Asegurado"]);
   const insuredValueHistorySection = sliceBetween(tokens, "Historial de Valor Asegurado", ["Resumen de Riesgos por Categoría"]);
 
@@ -962,6 +1017,78 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number) {
   return lines.length > 0 ? lines : [""];
 }
 
+function multiplyPdfMatrix(left: number[], right: number[]) {
+  return [
+    left[0] * right[0] + left[2] * right[1],
+    left[1] * right[0] + left[3] * right[1],
+    left[0] * right[2] + left[2] * right[3],
+    left[1] * right[2] + left[3] * right[3],
+    left[0] * right[4] + left[2] * right[5] + left[4],
+    left[1] * right[4] + left[3] * right[5] + left[5],
+  ];
+}
+
+async function extractFirstPageImages(pdfBytes: Uint8Array): Promise<PdfImageItem[]> {
+  const task = pdfjs.getDocument({ data: Uint8Array.from(pdfBytes) });
+  const document = await task.promise;
+  const images: PdfImageItem[] = [];
+
+  try {
+    const page = await document.getPage(1);
+    const operatorList = await page.getOperatorList();
+    let currentTransform = [1, 0, 0, 1, 0, 0];
+    const transformStack: number[][] = [];
+
+    for (let index = 0; index < operatorList.fnArray.length; index += 1) {
+      const operator = operatorList.fnArray[index];
+      const args = operatorList.argsArray[index];
+
+      if (operator === pdfjs.OPS.save) {
+        transformStack.push([...currentTransform]);
+        continue;
+      }
+
+      if (operator === pdfjs.OPS.restore) {
+        currentTransform = transformStack.pop() ?? [1, 0, 0, 1, 0, 0];
+        continue;
+      }
+
+      if (operator === pdfjs.OPS.transform) {
+        currentTransform = multiplyPdfMatrix(currentTransform, args as number[]);
+        continue;
+      }
+
+      if (operator === pdfjs.OPS.paintImageXObject) {
+        images.push({
+          x: currentTransform[4],
+          y: currentTransform[5],
+          width: Math.hypot(currentTransform[0], currentTransform[1]),
+          height: Math.hypot(currentTransform[2], currentTransform[3]),
+        });
+      }
+    }
+  } finally {
+    await task.destroy();
+  }
+
+  return images;
+}
+
+function hasVehiclePreviewImage(images: PdfImageItem[], vehicleHeadingY?: number) {
+  if (!vehicleHeadingY) {
+    return true;
+  }
+
+  return images.some((image) =>
+    image.x >= 30 &&
+    image.x <= 285 &&
+    image.y < vehicleHeadingY &&
+    image.y > vehicleHeadingY - 280 &&
+    image.width >= 120 &&
+    image.height >= 90,
+  );
+}
+
 class ReportRenderer {
   private page: PDFPage;
   private y: number;
@@ -974,6 +1101,7 @@ class ReportRenderer {
     fonts: Fonts,
     logoBytes: Uint8Array,
     private readonly providerPdfBytes: Uint8Array,
+    private readonly options: AutocheckPdfOptions = {},
   ) {
     this.fonts = fonts;
     this.logoBytes = logoBytes;
@@ -1043,7 +1171,31 @@ class ReportRenderer {
     this.drawLabelValue("Fecha de consulta", report.queryDate, metaX, this.y - 5, 110);
     this.drawLabelValue("Tipo de consulta", report.queryType, metaX + 125, this.y - 5, 110);
 
-    this.y -= 76;
+    if (this.options.includeContactNumbers) {
+      const contactY = this.y - 36;
+      const contactPrefix = "Contacto:";
+      this.drawText(`${contactPrefix} 310 5523591`, metaX, contactY, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+      });
+      this.drawText("312 4095620", metaX + this.fonts.bold.widthOfTextAtSize(`${contactPrefix} `, 7), contactY - 8, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+      });
+    }
+
+    if (this.options.includeModel2020Notice) {
+      this.drawWrappedText("Siniestros y reclamaciones 2020 en adelante.", metaX + 125, this.y - 36, 112, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+        lineHeight: 8,
+      });
+    }
+
+    this.y -= this.options.includeContactNumbers || this.options.includeModel2020Notice ? 90 : 76;
   }
 
   private drawVehicleAndScore(report: VehicleReport) {
@@ -1142,11 +1294,7 @@ class ReportRenderer {
     });
 
     if (!this.vehiclePreview) {
-      this.drawText(report.vehicle.brand, x + 10, y + height / 2 + 4, {
-        font: this.fonts.bold,
-        size: 14,
-        color: COLORS.slate,
-      });
+      this.drawVehiclePlaceholder(x, y, width, height);
       return;
     }
 
@@ -1158,8 +1306,93 @@ class ReportRenderer {
     });
   }
 
+  private drawVehiclePlaceholder(x: number, y: number, width: number, height: number) {
+    const iconColor = rgb(0.58, 0.63, 0.67);
+    const headlightColor = COLORS.white;
+    const scale = Math.min(width / 120, height / 78);
+    const iconWidth = 120 * scale;
+    const iconHeight = 78 * scale;
+    const originX = x + (width - iconWidth) / 2;
+    const originY = y + (height - iconHeight) / 2;
+    const point = (px: number, py: number) => ({
+      x: originX + px * scale,
+      y: originY + py * scale,
+    });
+
+    this.page.drawLine({
+      start: point(32, 44),
+      end: point(40, 66),
+      thickness: 6 * scale,
+      color: iconColor,
+    });
+    this.page.drawLine({
+      start: point(40, 66),
+      end: point(80, 66),
+      thickness: 6 * scale,
+      color: iconColor,
+    });
+    this.page.drawLine({
+      start: point(80, 66),
+      end: point(88, 44),
+      thickness: 6 * scale,
+      color: iconColor,
+    });
+    this.page.drawLine({
+      start: point(29, 42),
+      end: point(91, 42),
+      thickness: 18 * scale,
+      color: iconColor,
+    });
+    this.page.drawLine({
+      start: point(35, 50),
+      end: point(85, 50),
+      thickness: 5 * scale,
+      color: iconColor,
+    });
+    this.page.drawRectangle({
+      ...point(28, 16),
+      width: 16 * scale,
+      height: 28 * scale,
+      color: iconColor,
+    });
+    this.page.drawRectangle({
+      ...point(76, 16),
+      width: 16 * scale,
+      height: 28 * scale,
+      color: iconColor,
+    });
+    this.page.drawRectangle({
+      ...point(20, 40),
+      width: 18 * scale,
+      height: 7 * scale,
+      color: headlightColor,
+    });
+    this.page.drawRectangle({
+      ...point(82, 40),
+      width: 18 * scale,
+      height: 7 * scale,
+      color: headlightColor,
+    });
+    this.page.drawLine({
+      start: point(18, 49),
+      end: point(29, 48),
+      thickness: 7 * scale,
+      color: iconColor,
+    });
+    this.page.drawLine({
+      start: point(91, 48),
+      end: point(102, 49),
+      thickness: 7 * scale,
+      color: iconColor,
+    });
+  }
+
   private async prepareVehiclePreview(report: VehicleReport) {
     try {
+      if (report.sourceLayout.vehiclePreviewAvailable === false) {
+        return;
+      }
+
       const providerDocument = await PDFDocument.load(Uint8Array.from(this.providerPdfBytes));
       const [firstPage] = providerDocument.getPages();
       if (!firstPage) {
@@ -1573,6 +1806,12 @@ class ReportRenderer {
       }
     }
 
+    if (relatedPeople.general.length > 0) {
+      for (const person of relatedPeople.general) {
+        this.drawRelatedPersonCard(person, COLORS.muted);
+      }
+    }
+
     if (relatedPeople.previous.length > 0) {
       this.drawSmallPeopleHeading("Historial anterior", COLORS.muted);
       for (const person of relatedPeople.previous) {
@@ -1902,13 +2141,20 @@ export async function extractAutocheckReport(pdfBytes: Uint8Array, sourceName = 
 
   const items = await extractPdfTextItems(pdfBytes);
   const tokens = items.map((item) => item.str).filter(Boolean);
+  const vehicleHeadingY = items.find((item) => item.str === "Identificación del Vehículo")?.y;
+  const firstPageImages = await extractFirstPageImages(pdfBytes);
   const sourceLayout = {
-    vehicleHeadingY: items.find((item) => item.str === "Identificación del Vehículo")?.y,
+    vehicleHeadingY,
+    vehiclePreviewAvailable: hasVehiclePreviewImage(firstPageImages, vehicleHeadingY),
   };
   return parseReport(tokens, sourceName, sourceLayout);
 }
 
-export async function processAutocheckPdf(pdfBytes: Uint8Array, sourceName = "proveedor.pdf") {
+export async function processAutocheckPdf(
+  pdfBytes: Uint8Array,
+  sourceName = "proveedor.pdf",
+  options: AutocheckPdfOptions = {},
+) {
   const report = await extractAutocheckReport(pdfBytes, sourceName);
   const pdfDocument = await PDFDocument.create();
   const fonts = {
@@ -1916,7 +2162,7 @@ export async function processAutocheckPdf(pdfBytes: Uint8Array, sourceName = "pr
     bold: await pdfDocument.embedFont(StandardFonts.HelveticaBold),
   };
   const logoBytes = await loadLogoBytes();
-  const renderer = new ReportRenderer(pdfDocument, fonts, logoBytes, pdfBytes);
+  const renderer = new ReportRenderer(pdfDocument, fonts, logoBytes, pdfBytes, options);
 
   await renderer.render(report);
 
