@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const LINKS = [
   { href: "/", label: "Usuarios en base de datos" },
   { href: "/sesiones", label: "Sesiones de Evolution" },
+  { href: "/autocheck-pdf", label: "Autocheck PDF" },
 ] as const;
 
 export function DashboardNav() {
