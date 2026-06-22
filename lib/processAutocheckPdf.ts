@@ -106,6 +106,70 @@ type RiskCategory = {
   note: string;
 };
 
+type ClaimDetail = {
+  id: string;
+  notice: string;
+  date: string;
+  insurer: string;
+  insuredValue: string;
+  status: string;
+  reported: string;
+  paid: string;
+};
+
+type ClaimAnalysis = {
+  summary: KeyValue[];
+  details: ClaimDetail[];
+};
+
+type InsuredValueRow = {
+  year: string;
+  value: string;
+  insurer: string;
+  variation: string;
+};
+
+type HealthInsurance = {
+  summary: KeyValue[];
+  continuityIndex: string;
+  insurers: string[];
+  coverageByYear: string[];
+};
+
+type RelatedPerson = {
+  group: "current" | "previous";
+  kind: string;
+  name: string;
+  status: string;
+  roles: string[];
+  period: string;
+  policies: string;
+  insurer: string;
+};
+
+type RelatedPeople = {
+  summary: KeyValue[];
+  roleCounts: KeyValue[];
+  note: string;
+  current: RelatedPerson[];
+  previous: RelatedPerson[];
+};
+
+type ValuationReport = {
+  commercial: KeyValue[];
+  depreciation: KeyValue[];
+  projections: KeyValue[];
+};
+
+type InsuranceReport = {
+  summary: KeyValue[];
+  status: string;
+  available: string;
+  insuredValue: string;
+  coverages: string[];
+  note: string;
+};
+
 type VehicleReport = {
   plate: string;
   queryDate: string;
@@ -130,16 +194,18 @@ type VehicleReport = {
     factors: RiskFactor[];
   };
   valuation: KeyValue[];
+  valuationDetail: ValuationReport;
   insurance: KeyValue[];
+  insuranceDetail: InsuranceReport;
   riskCategories: RiskCategory[];
-  relatedPeople: {
-    summary: KeyValue[];
-    details: string[];
-  };
+  relatedPeople: RelatedPeople;
+  healthInsurance: HealthInsurance;
   rawSections: {
     claims: string[];
     insuredValueHistory: string[];
   };
+  claimAnalysis: ClaimAnalysis;
+  insuredValueHistory: InsuredValueRow[];
   sourceLayout: {
     vehicleHeadingY?: number;
   };
@@ -164,6 +230,7 @@ function normalizeText(text: string) {
 function toWinAnsiSafeText(text: string) {
   return text
     .replace(/[–—]/g, "-")
+    .replace(/…/g, "...")
     .replace(/▲/g, "sube")
     .replace(/▼/g, "baja")
     .replace(/[✓✅]/g, "Si")
@@ -186,13 +253,27 @@ function findTokenIndex(tokens: string[], token: string, fromIndex = 0) {
 
 function findAnyTokenIndex(tokens: string[], candidates: string[], fromIndex = 0) {
   const indexes = candidates
-    .map((candidate) => findTokenIndex(tokens, candidate, fromIndex))
+    .map((candidate) =>
+      tokens.findIndex((value, index) =>
+        index >= fromIndex && (value === candidate || value.startsWith(`${candidate} (`)),
+      ),
+    )
     .filter((index) => index >= 0);
   return indexes.length > 0 ? Math.min(...indexes) : -1;
 }
 
 function sliceBetween(tokens: string[], start: string, endCandidates: string[]) {
   const startIndex = findTokenIndex(tokens, start);
+  if (startIndex < 0) {
+    return [];
+  }
+
+  const endIndex = findAnyTokenIndex(tokens, endCandidates, startIndex + 1);
+  return tokens.slice(startIndex + 1, endIndex >= 0 ? endIndex : undefined);
+}
+
+function sliceBetweenPrefix(tokens: string[], startPrefix: string, endCandidates: string[]) {
+  const startIndex = tokens.findIndex((value) => value.startsWith(startPrefix));
   if (startIndex < 0) {
     return [];
   }
@@ -261,6 +342,34 @@ function collectMoneyAfter(tokens: string[], index: number) {
   return parts.length > 0 ? `$ ${parts.join("").replace(/,+/g, ",")}` : "";
 }
 
+function collectMoneyBefore(tokens: string[], index: number) {
+  const parts: string[] = [];
+  let started = false;
+
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const token = tokens[cursor];
+    if (/^\$\s*[\d.,]+$/.test(token)) {
+      parts.unshift(token.replace("$", "").trim());
+      started = true;
+      break;
+    }
+    if (token === "$") {
+      started = true;
+      break;
+    }
+    if (/^\d+$/.test(token) || token === "." || /^[\d.,]+$/.test(token)) {
+      parts.unshift(token);
+      started = true;
+      continue;
+    }
+    if (started) {
+      break;
+    }
+  }
+
+  return parts.length > 0 ? `$ ${parts.join("").replace(/,+/g, ",")}` : "";
+}
+
 function parseMoney(tokens: string[], label: string) {
   const index = findTokenIndex(tokens, label);
   if (index < 0) {
@@ -282,6 +391,29 @@ function parseValueAfter(tokens: string[], label: string) {
   }
 
   return tokens[index + 1] ?? "";
+}
+
+function findEntryValue(entries: KeyValue[], label: string) {
+  return entries.find((entry) => entry.label === label)?.value ?? "";
+}
+
+function parseValuationReport(entries: KeyValue[]): ValuationReport {
+  return {
+    commercial: [
+      { label: "Valor inicial", value: findEntryValue(entries, "Valor inicial") },
+      { label: "Valor actual", value: findEntryValue(entries, "Valor actual") },
+    ].filter((entry) => entry.value),
+    depreciation: [
+      { label: "Pérdida", value: findEntryValue(entries, "Pérdida") },
+      { label: "Retención", value: findEntryValue(entries, "Retención") },
+      { label: "Monto depr.", value: findEntryValue(entries, "Monto depreciado") },
+    ].filter((entry) => entry.value),
+    projections: [
+      { label: "Edad", value: findEntryValue(entries, "Edad del vehículo") },
+      { label: "Depr. anual prom.", value: findEntryValue(entries, "Depreciación anual promedio") },
+      { label: "Pérdida/año", value: findEntryValue(entries, "Pérdida anual promedio") },
+    ].filter((entry) => entry.value),
+  };
 }
 
 async function extractPdfTextItems(pdfBytes: Uint8Array) {
@@ -454,41 +586,127 @@ function parseRiskCategories(section: string[]) {
   });
 }
 
-function parseRelatedPeople(section: string[]) {
+function parsePersonEntries(section: string[], group: RelatedPerson["group"]) {
+  const entries: RelatedPerson[] = [];
+  const stopLabels = new Set([
+    "ACTUALMENTE VINCULADOS",
+    "HISTORIAL ANTERIOR",
+    "Datos referenciales",
+  ]);
+
+  for (let index = 0; index < section.length; index += 1) {
+    if (section[index] !== "Persona" && section[index] !== "Empresa") {
+      continue;
+    }
+
+    const nextIndex = section.findIndex((value, candidateIndex) =>
+      candidateIndex > index && (value === "Persona" || value === "Empresa" || stopLabels.has(value)),
+    );
+    const block = section.slice(index, nextIndex >= 0 ? nextIndex : undefined);
+    const roles = block.filter((value) => ["Asegurado", "Tomadore", "Beneficiario", "Empresa"].includes(value));
+    const period = block.find((value) => /^\d{4}-\d{4}$/.test(value)) ?? "";
+    const policyIndex = block.findIndex((value) => /pólizas/i.test(value));
+    const nameEndIndex = block.findIndex((value, valueIndex) =>
+      valueIndex > 1 && (value === "✓" || value === "Vigente" || roles.includes(value) || /^\d{4}-\d{4}$/.test(value)),
+    );
+
+    entries.push({
+      group,
+      kind: block[0] ?? "Persona",
+      name: block.slice(1, nameEndIndex > 1 ? nameEndIndex : 2).join(" "),
+      status: block.includes("Vigente") ? "Vigente" : "",
+      roles,
+      period,
+      policies: policyIndex >= 0
+        ? (/^\d+\s+pólizas/i.test(block[policyIndex]) ? block[policyIndex] : `${block[policyIndex - 1] ?? ""} ${block[policyIndex]}`.trim())
+        : "",
+      insurer: policyIndex >= 0 ? block.slice(policyIndex + 1).filter((value) => value !== "·").join(" ") : "",
+    });
+  }
+
+  return entries;
+}
+
+function parseRelatedPeople(section: string[]): RelatedPeople {
   const numbers = section.filter((value) => /^\d+$/.test(value)).slice(0, 4);
   const summaryLabels = ["Personas", "Vigentes", "Apariciones", "Empresas"];
   const summary = summaryLabels.map((label, index) => ({
     label,
     value: numbers[index] ?? "0",
   }));
-  const details = section
-    .filter((value) => !/^\d+$/.test(value))
-    .filter((value) => !["Asegurados, tomadores y beneficiarios", "(1)"].includes(value))
-    .slice(-16);
+  const roleCounts = section
+    .filter((value) => /^\d+\s+(Asegurados|Tomadores|Beneficiarios)$/i.test(value))
+    .map((value) => {
+      const [count, ...label] = value.split(" ");
+      return { label: label.join(" "), value: count };
+    });
+  const note = section.find((value) => value.startsWith("Vinculadas al historial")) ?? "";
+  const currentSection = sliceBetween(section, "ACTUALMENTE VINCULADOS", ["HISTORIAL ANTERIOR", "Datos referenciales"]);
+  const previousSection = sliceBetween(section, "HISTORIAL ANTERIOR", ["Datos referenciales"]);
 
-  return { summary, details };
+  return {
+    summary,
+    roleCounts,
+    note,
+    current: parsePersonEntries(currentSection, "current"),
+    previous: parsePersonEntries(previousSection, "previous"),
+  };
 }
 
-function parseInsurance(section: string[]) {
+function parseHealthInsurance(section: string[]): HealthInsurance {
   if (section.length === 0) {
-    return [];
+    return { summary: [], continuityIndex: "", insurers: [], coverageByYear: [] };
   }
 
-  const body = section.filter((value) => value !== "COBERTURAS PÓLIZA VIGENTE");
+  const summary: KeyValue[] = [];
+  const policyIndex = findTokenIndex(section, "PÓLIZAS");
+  const continuityIndex = findTokenIndex(section, "CONTINUIDAD");
+  const durationIndex = findTokenIndex(section, "DURACIÓN PROM.");
+  const changeIndex = findTokenIndex(section, "CAMBIOS ASEG.");
+
+  if (policyIndex > 0) summary.push({ label: "Pólizas", value: section[policyIndex - 1] });
+  if (continuityIndex > 1) summary.push({ label: "Continuidad", value: `${section[continuityIndex - 2]}${section[continuityIndex - 1]}` });
+  if (durationIndex > 1) summary.push({ label: "Duración prom.", value: `${section[durationIndex - 2]} ${section[durationIndex - 1]}`.trim() });
+  if (changeIndex > 0) summary.push({ label: "Cambios aseg.", value: section[changeIndex - 1] });
+
+  const insurerIndex = section.findIndex((value) => value.startsWith("ASEGURADORAS"));
+  const coverageIndex = findTokenIndex(section, "COBERTURAS POR AÑO");
+  const analysisIndex = section.findIndex((value) => value.startsWith("Análisis basado"));
+  const continuityTextIndex = findTokenIndex(section, "Índice de Continuidad");
+
+  return {
+    summary,
+    continuityIndex: continuityTextIndex >= 0 ? section[continuityTextIndex + 1] ?? "" : "",
+    insurers: insurerIndex >= 0 && coverageIndex > insurerIndex ? section.slice(insurerIndex + 1, coverageIndex) : [],
+    coverageByYear: coverageIndex >= 0 ? section.slice(coverageIndex + 1, analysisIndex >= 0 ? analysisIndex : undefined) : [],
+  };
+}
+
+function parseInsuranceReport(section: string[]): InsuranceReport {
+  if (section.length === 0) {
+    return { summary: [], status: "", available: "", insuredValue: "", coverages: [], note: "" };
+  }
+
+  const body = section.filter(Boolean);
   const entries: KeyValue[] = [];
   const joined = body.join(" ");
   const statusLabelIndex = findTokenIndex(body, "ESTADO DE PÓLIZA");
   const status = statusLabelIndex > 0 ? body[statusLabelIndex - 1] : body[0] ?? "";
+  const availability = statusLabelIndex >= 0 ? body[statusLabelIndex + 1] ?? "" : "";
   const date = joined.match(/\d{2}\s*\/\s*\d{2}\s*\/\s*\d{4}/)?.[0].replace(/\s+/g, "") ??
+    joined.match(/\d{2}\s*\/\s*\d{4}/)?.[0].replace(/\s+/g, "") ??
     body.find((value) => /^\d{2}\/\d{2}\/\d{4}$/.test(value)) ??
+    body.find((value) => /^\d{2}\/\d{4}$/.test(value)) ??
     "";
   const insurerLabelIndex = findTokenIndex(body, "ASEGURADORA");
   const insurer = insurerLabelIndex > 0
     ? body[insurerLabelIndex - 1]
     : body.find((value, index) => index > 0 && /^[A-ZÁÉÍÓÚÑ0-9 -]{2,}$/.test(value) && !/^(Vigente|Sin póliza|N\/A|NO|ESTADO DE PÓLIZA|VENCIMIENTO)/i.test(value)) ?? "";
   const claimsLabelIndex = findTokenIndex(body, "RECLAMACIONES");
-  const claims = claimsLabelIndex > 0
-    ? body[claimsLabelIndex - 1]
+  const claims = claimsLabelIndex > 1 && /reportes?/i.test(body[claimsLabelIndex - 1])
+    ? `${body[claimsLabelIndex - 2]} ${body[claimsLabelIndex - 1]}`.trim()
+    : claimsLabelIndex > 0
+      ? body[claimsLabelIndex - 1]
     : body.find((value) => /reportes?/i.test(value)) ?? "";
 
   if (status) entries.push({ label: "Estado", value: status });
@@ -496,16 +714,151 @@ function parseInsurance(section: string[]) {
   if (insurer) entries.push({ label: "Aseguradora", value: insurer });
   if (claims) entries.push({ label: "Reclamaciones", value: claims });
 
-  const insuredValue = body.find((value) => value.startsWith("V. Asegurado:"));
-  if (insuredValue) {
-    const valueIndex = findTokenIndex(body, insuredValue);
-    entries.push({
-      label: "Valor asegurado",
-      value: insuredValue.replace("V. Asegurado:", "").trim() || collectMoneyAfter(body, valueIndex),
+  const insuredValueToken = body.find((value) => value.startsWith("V. Asegurado:"));
+  const insuredValueIndex = insuredValueToken ? findTokenIndex(body, insuredValueToken) : -1;
+  const insuredValue = insuredValueToken
+    ? insuredValueToken.replace("V. Asegurado:", "").trim() || collectMoneyAfter(body, insuredValueIndex)
+    : "";
+
+  if (insuredValue) entries.push({ label: "Valor asegurado", value: insuredValue });
+
+  const coverageIndex = findTokenIndex(body, "COBERTURAS PÓLIZA VIGENTE");
+  const noteIndex = body.findIndex((value) => value.startsWith("Corresponden a última póliza"));
+  const coverageStart = insuredValueIndex >= 0 ? insuredValueIndex + 1 : coverageIndex + 1;
+  const coverageTokens = coverageIndex >= 0
+    ? body.slice(coverageStart, noteIndex >= 0 ? noteIndex : undefined)
+    : [];
+  const coverages: string[] = [];
+  let currentCoverage: string[] = [];
+
+  for (const token of coverageTokens) {
+    if (token === "$" || /^[\d.,]+$/.test(token)) {
+      continue;
+    }
+
+    if (token === "✓") {
+      const coverage = currentCoverage
+        .filter((value) => value !== "undefined")
+        .join(" ")
+        .trim();
+      if (coverage) coverages.push(coverage);
+      currentCoverage = [];
+      continue;
+    }
+
+    currentCoverage.push(token);
+  }
+
+  return {
+    summary: entries.length > 0 ? entries : [{ label: "Información", value: body.join(" ") }],
+    status,
+    available: availability,
+    insuredValue,
+    coverages: uniqueKeepOrder(coverages),
+    note: noteIndex >= 0 ? body[noteIndex] : "",
+  };
+}
+
+function parseInsurance(section: string[]) {
+  return parseInsuranceReport(section).summary;
+}
+
+function parseClaimAnalysis(section: string[]): ClaimAnalysis {
+  if (section.length === 0) {
+    return { summary: [], details: [] };
+  }
+
+  const claimedIndex = findTokenIndex(section, "RECLAMADO");
+  const paidIndex = findTokenIndex(section, "PAGADO");
+  const avgNoticeIndex = findTokenIndex(section, "PROM. AVISO");
+  const summary: KeyValue[] = [
+    { label: "Siniestros", value: section[0] ?? "0" },
+    { label: "Reclamado", value: claimedIndex > 0 ? collectMoneyBefore(section, claimedIndex) : "" },
+    { label: "Pagado", value: paidIndex > 0 ? collectMoneyBefore(section, paidIndex) : "" },
+    {
+      label: "Prom. aviso",
+      value: avgNoticeIndex > 1 ? `${section[avgNoticeIndex - 2]}${section[avgNoticeIndex - 1]}` : "",
+    },
+  ].filter((entry) => entry.value);
+
+  const detailStart = avgNoticeIndex >= 0 ? avgNoticeIndex + 1 : 0;
+  const details: ClaimDetail[] = [];
+
+  for (let index = detailStart; index < section.length; index += 1) {
+    if (!/^#/.test(section[index])) {
+      continue;
+    }
+
+    const nextIndex = section.findIndex((value, candidateIndex) => candidateIndex > index && /^#/.test(value));
+    const block = section.slice(index, nextIndex >= 0 ? nextIndex : undefined);
+    const noticeIndex = block.findIndex((value) => value.startsWith("Aviso:"));
+    const insurerIndex = findTokenIndex(block, "Aseguradora:");
+    const insuredValueIndex = findTokenIndex(block, "V. Asegurado:");
+    const reportedIndex = findTokenIndex(block, "Reportado:");
+    const paidDetailIndex = findTokenIndex(block, "Pagado:");
+    const status = block.find((value) => /^PPD|^PTD|^PTH|^RC/i.test(value)) ?? "";
+
+    details.push({
+      id: block[0],
+      notice: noticeIndex >= 0 ? block[noticeIndex].replace("Aviso:", "").trim() : "",
+      date: noticeIndex >= 0 ? block[noticeIndex + 1] ?? "" : "",
+      insurer: insurerIndex >= 0 ? block[insurerIndex + 1] ?? "" : "",
+      insuredValue: insuredValueIndex >= 0 ? collectMoneyAfter(block, insuredValueIndex) : "",
+      status,
+      reported: reportedIndex >= 0 ? collectMoneyAfter(block, reportedIndex) : "",
+      paid: paidDetailIndex >= 0 ? collectMoneyAfter(block, paidDetailIndex) : "",
     });
   }
 
-  return entries.length > 0 ? entries : [{ label: "Información", value: body.join(" ") }];
+  return { summary, details };
+}
+
+function parseInsuredValueHistory(tokens: string[]): InsuredValueRow[] {
+  const rows: InsuredValueRow[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!/^(19|20)\d{2}$/.test(tokens[index]) || tokens[index + 1] !== "$") {
+      continue;
+    }
+
+    const year = tokens[index];
+    const value = collectMoneyAfter(tokens, index);
+    let cursor = index + 2;
+    while (cursor < tokens.length && (/^\d+$/.test(tokens[cursor]) || tokens[cursor] === "." || /^[\d.,]+$/.test(tokens[cursor]))) {
+      cursor += 1;
+    }
+
+    const insurerParts: string[] = [];
+    while (
+      cursor < tokens.length &&
+      !["▲", "▼", "-", "*"].includes(tokens[cursor]) &&
+      !/^\d+(\.\d+)?%$/.test(tokens[cursor]) &&
+      !/^(19|20)\d{2}$/.test(tokens[cursor])
+    ) {
+      insurerParts.push(tokens[cursor]);
+      cursor += 1;
+    }
+
+    let variation = "";
+    if (tokens[cursor] === "▲" || tokens[cursor] === "▼") {
+      variation = `${tokens[cursor]} ${tokens[cursor + 1] ?? ""}`.trim();
+    } else if (tokens[cursor] === "-" || /^\d+(\.\d+)?%$/.test(tokens[cursor] ?? "")) {
+      variation = tokens[cursor];
+    }
+
+    if (value && insurerParts.length > 0) {
+      rows.push({
+        year,
+        value,
+        insurer: insurerParts.join(" "),
+        variation,
+      });
+    }
+  }
+
+  return rows.filter((row, index, all) =>
+    all.findIndex((candidate) => candidate.year === row.year && candidate.value === row.value && candidate.insurer === row.insurer) === index,
+  );
 }
 
 function parseReport(
@@ -519,15 +872,27 @@ function parseReport(
   const riskSection = sliceBetween(tokens, "Score de Riesgo Vehicular", ["Valoración FASECOLDA"]);
   const valuationSection = sliceBetween(tokens, "Valoración FASECOLDA", ["Seguro Todo Riesgo"]);
   const insuranceSection = sliceBetween(tokens, "Seguro Todo Riesgo", NEXT_OPTIONAL_SECTIONS);
+  const healthInsuranceSection = sliceBetween(tokens, "Salud Aseguradora", ["Historial de Valor Asegurado"]);
   const riskCategoriesSection = sliceBetween(tokens, "Resumen de Riesgos por Categoría", ["Personas Relacionadas"]);
-  const relatedPeopleSection = sliceBetween(tokens, "Personas Relacionadas", []);
-  const claimsSection = sliceBetween(tokens, "Análisis de Siniestralidad", ["Salud Aseguradora", "Historial de Valor Asegurado"]);
+  const relatedPeopleSection = sliceBetween(tokens, "Personas Relacionadas", ["Datos referenciales"]);
+  const claimsSection = sliceBetweenPrefix(tokens, "Análisis de Siniestralidad", ["Salud Aseguradora", "Historial de Valor Asegurado"]);
   const insuredValueHistorySection = sliceBetween(tokens, "Historial de Valor Asegurado", ["Resumen de Riesgos por Categoría"]);
 
   const score = Number(tokens.find((value, index) => tokens[index + 1] === "/ 100" && /^\d+$/.test(value)) ?? "0");
   const riskLevel = firstMatchValue(joined, /RIESGO\s+(BAJO|MEDIO|ALTO)/i, "RIESGO NO DISPONIBLE")
     .replace(/^RIESGO\s+/i, "")
     .toUpperCase();
+  const valuation = [
+    { label: "Valor inicial", value: parseMoney(valuationSection, "Valor Inicial") },
+    { label: "Valor actual", value: parseMoney(valuationSection, "Valor Actual") },
+    { label: "Pérdida", value: parseValueAfter(valuationSection, "Pérdida") },
+    { label: "Retención", value: parseValueAfter(valuationSection, "Retención") },
+    { label: "Monto depreciado", value: parseMoney(valuationSection, "Monto Depr.") },
+    { label: "Edad del vehículo", value: parseValueAfter(valuationSection, "Edad") },
+    { label: "Depreciación anual promedio", value: parseValueAfter(valuationSection, "Depr. anual prom.") },
+    { label: "Pérdida anual promedio", value: parseMoney(valuationSection, "Pérdida/año") },
+  ].filter((entry) => entry.value);
+  const insuranceDetail = parseInsuranceReport(insuranceSection);
 
   return {
     plate: parsePlate(tokens),
@@ -535,7 +900,7 @@ function parseReport(
       joined,
       /\d{2}\/\d{2}\/\d{4},\s*\d{2}\s*:\s*\d{2}\s*[ap]\.m\./i,
     ).replace(/\s+:\s+/, ":"),
-    queryType: joined.includes("Premium") ? "Premium" : "No disponible",
+    queryType: "Histórica Reciente",
     sourceName,
     vehicle: parseVehicle(vehicleSection),
     technicalSpecs: parseTechnicalSpecs(technicalSection),
@@ -545,23 +910,19 @@ function parseReport(
       message: riskSection.find((value) => /historial|considerar/i.test(value)) ?? "",
       factors: parseRiskFactors(riskSection),
     },
-    valuation: [
-      { label: "Valor inicial", value: parseMoney(valuationSection, "Valor Inicial") },
-      { label: "Valor actual", value: parseMoney(valuationSection, "Valor Actual") },
-      { label: "Pérdida", value: parseValueAfter(valuationSection, "Pérdida") },
-      { label: "Retención", value: parseValueAfter(valuationSection, "Retención") },
-      { label: "Monto depreciado", value: parseMoney(valuationSection, "Monto Depr.") },
-      { label: "Edad del vehículo", value: parseValueAfter(valuationSection, "Edad") },
-      { label: "Depreciación anual promedio", value: parseValueAfter(valuationSection, "Depr. anual prom.") },
-      { label: "Pérdida anual promedio", value: parseMoney(valuationSection, "Pérdida/año") },
-    ].filter((entry) => entry.value),
-    insurance: parseInsurance(insuranceSection),
+    valuation,
+    valuationDetail: parseValuationReport(valuation),
+    insurance: insuranceDetail.summary,
+    insuranceDetail,
     riskCategories: parseRiskCategories(riskCategoriesSection),
     relatedPeople: parseRelatedPeople(relatedPeopleSection),
+    healthInsurance: parseHealthInsurance(healthInsuranceSection),
     rawSections: {
       claims: claimsSection.slice(0, 45),
       insuredValueHistory: insuredValueHistorySection.slice(0, 60),
     },
+    claimAnalysis: parseClaimAnalysis(claimsSection),
+    insuredValueHistory: parseInsuredValueHistory(tokens),
     sourceLayout,
   };
 }
@@ -627,17 +988,30 @@ class ReportRenderer {
     this.drawVehicleAndScore(report);
     this.drawSectionTitle("Ficha técnica");
     this.drawKeyValueGrid(report.technicalSpecs, 4);
+    this.ensureSpace(150);
     this.drawSectionTitle("Valoración Fasecolda");
-    this.drawKeyValueGrid(report.valuation, 2);
+    this.drawValuation(report.valuationDetail);
+    this.ensureSpace(175);
     this.drawSectionTitle("Seguro todo riesgo");
-    this.drawKeyValueGrid(report.insurance, 4);
+    this.drawInsurance(report.insuranceDetail);
 
-    if (report.rawSections.claims.length > 0) {
+    if (report.claimAnalysis.summary.length > 0 || report.claimAnalysis.details.length > 0) {
+      this.drawSectionTitle("Análisis de siniestralidad");
+      this.drawClaimAnalysis(report.claimAnalysis);
+    } else if (report.rawSections.claims.length > 0) {
       this.drawSectionTitle("Análisis de siniestralidad");
       this.drawTextCard(report.rawSections.claims.join(" "));
     }
 
-    if (report.rawSections.insuredValueHistory.length > 0) {
+    if (report.healthInsurance.summary.length > 0) {
+      this.drawSectionTitle("Salud aseguradora");
+      this.drawHealthInsurance(report.healthInsurance);
+    }
+
+    if (report.insuredValueHistory.length > 0) {
+      this.drawSectionTitle("Historial de valor asegurado");
+      this.drawInsuredValueHistory(report.insuredValueHistory);
+    } else if (report.rawSections.insuredValueHistory.length > 0) {
       this.drawSectionTitle("Historial de valor asegurado");
       this.drawTextCard(report.rawSections.insuredValueHistory.join(" "));
     }
@@ -648,10 +1022,7 @@ class ReportRenderer {
     }
 
     this.drawSectionTitle("Personas relacionadas");
-    this.drawKeyValueGrid(report.relatedPeople.summary, 4);
-    if (report.relatedPeople.details.length > 0) {
-      this.drawTextCard(report.relatedPeople.details.join(" · "));
-    }
+    this.drawRelatedPeople(report.relatedPeople);
 
     this.drawFooter();
   }
@@ -879,6 +1250,399 @@ class ReportRenderer {
       });
       currentY -= 11;
     }
+  }
+
+  private drawValuation(valuation: ValuationReport) {
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const height = 112;
+    const gap = 10;
+    const panelWidth = (width - gap * 2) / 3;
+    const panels = [
+      {
+        title: "Valores comerciales",
+        entries: valuation.commercial,
+        color: COLORS.blue,
+        fill: COLORS.lightBlue,
+      },
+      {
+        title: "Depreciación",
+        entries: valuation.depreciation,
+        color: COLORS.green,
+        fill: rgb(0.94, 1, 0.97),
+      },
+      {
+        title: "Proyecciones",
+        entries: valuation.projections,
+        color: rgb(0.29, 0.25, 0.83),
+        fill: rgb(0.96, 0.97, 1),
+      },
+    ];
+
+    this.ensureSpace(height);
+    const topY = this.y;
+    for (const [index, panel] of panels.entries()) {
+      const x = PAGE_MARGIN + index * (panelWidth + gap);
+      this.page.drawRectangle({
+        x,
+        y: topY - height,
+        width: panelWidth,
+        height,
+        color: panel.fill,
+        borderColor: COLORS.border,
+        borderWidth: 1,
+      });
+      this.drawText(panel.title.toUpperCase(), x + CARD_PADDING, topY - 18, {
+        font: this.fonts.bold,
+        size: 7.5,
+        color: panel.color,
+      });
+
+      let rowY = topY - 40;
+      for (const entry of panel.entries) {
+        this.drawText(entry.label, x + CARD_PADDING, rowY, {
+          size: 8,
+          color: COLORS.slate,
+        });
+        const valueColor = /actual/i.test(entry.label)
+          ? COLORS.blue
+          : /pérdida|depr/i.test(entry.label) && /[1-9]/.test(entry.value)
+            ? COLORS.red
+            : /retención/i.test(entry.label)
+              ? COLORS.green
+              : COLORS.slate;
+        this.drawWrappedText(entry.value || "No disponible", x + panelWidth - 78, rowY, 66, {
+          font: this.fonts.bold,
+          size: 8.5,
+          color: valueColor,
+          lineHeight: 9,
+        });
+        rowY -= 20;
+      }
+    }
+
+    this.y -= height + 10;
+  }
+
+  private drawInsurance(insurance: InsuranceReport) {
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const gap = 8;
+    const cardWidth = (width - gap * 3) / 4;
+    const summary = insurance.summary.filter((entry) => entry.label !== "Valor asegurado").slice(0, 4);
+    const summaryHeight = 48;
+
+    this.ensureSpace(170);
+    const topY = this.y;
+    summary.forEach((entry, index) => {
+      const x = PAGE_MARGIN + index * (cardWidth + gap);
+      const accent = /estado/i.test(entry.label)
+        ? (/vigente|disponible/i.test(entry.value) ? COLORS.green : riskColor(entry.value))
+        : /reclamaciones/i.test(entry.label) && /[1-9]/.test(entry.value)
+          ? COLORS.yellow
+          : COLORS.blue;
+      this.page.drawRectangle({
+        x,
+        y: topY - summaryHeight,
+        width: cardWidth,
+        height: summaryHeight,
+        color: COLORS.white,
+        borderColor: accent,
+        borderWidth: 0.7,
+      });
+      this.drawWrappedText(entry.value || "No disponible", x + 8, topY - 20, cardWidth - 16, {
+        font: this.fonts.bold,
+        size: 12,
+        color: accent,
+        lineHeight: 12,
+      });
+      this.drawSmallCaps(entry.label, x + 8, topY - 36, 5.7);
+    });
+
+    if (insurance.available) {
+      this.drawText(insurance.available, PAGE_MARGIN + 10, topY - 63, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.green,
+      });
+    }
+
+    this.y -= summaryHeight + 22;
+
+    const chips = insurance.coverages.length > 0 ? insurance.coverages : ["Coberturas no disponibles"];
+    const columns = 3;
+    const chipGap = 6;
+    const chipWidth = (width - CARD_PADDING * 2 - chipGap * (columns - 1)) / columns;
+    const chipRows = Math.ceil(chips.length / columns);
+    const coverageHeight = 48 + chipRows * 24 + (insurance.note ? 18 : 0);
+    this.ensureSpace(coverageHeight);
+    const coverageTopY = this.y;
+    this.drawCard(PAGE_MARGIN, coverageTopY - coverageHeight, width, coverageHeight);
+    this.drawSmallCaps("Coberturas póliza vigente", PAGE_MARGIN + CARD_PADDING, coverageTopY - 18, 6.5);
+    this.drawText(`V. asegurado: ${insurance.insuredValue || "No disponible"}`, PAGE_MARGIN + width - 150, coverageTopY - 18, {
+      font: this.fonts.bold,
+      size: 8,
+      color: COLORS.slate,
+    });
+
+    chips.forEach((coverage, index) => {
+      const row = Math.floor(index / columns);
+      const col = index % columns;
+      const x = PAGE_MARGIN + CARD_PADDING + col * (chipWidth + chipGap);
+      const y = coverageTopY - 48 - row * 24;
+      this.page.drawRectangle({
+        x,
+        y,
+        width: chipWidth,
+        height: 18,
+        color: rgb(0.93, 1, 0.96),
+        borderColor: rgb(0.45, 0.86, 0.64),
+        borderWidth: 0.7,
+      });
+      this.drawWrappedText(coverage, x + 8, y + 5, chipWidth - 24, {
+        font: this.fonts.bold,
+        size: 7,
+        color: rgb(0.06, 0.4, 0.28),
+        lineHeight: 8,
+      });
+      this.drawText("Si", x + chipWidth - 16, y + 5, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.green,
+      });
+    });
+
+    if (insurance.note) {
+      this.drawWrappedText(insurance.note, PAGE_MARGIN + CARD_PADDING, coverageTopY - coverageHeight + 12, width - 24, {
+        size: 7,
+        color: COLORS.muted,
+        lineHeight: 8,
+      });
+    }
+
+    this.y -= coverageHeight + 10;
+  }
+
+  private drawClaimAnalysis(claimAnalysis: ClaimAnalysis) {
+    if (claimAnalysis.summary.length > 0) {
+      this.drawKeyValueGrid(claimAnalysis.summary, 4);
+    }
+
+    for (const detail of claimAnalysis.details) {
+      const width = A4_WIDTH - PAGE_MARGIN * 2;
+      const height = 70;
+      this.ensureSpace(height);
+      this.drawCard(PAGE_MARGIN, this.y - height, width, height);
+
+      this.drawText(detail.id, PAGE_MARGIN + CARD_PADDING, this.y - 18, {
+        font: this.fonts.bold,
+        size: 8,
+        color: COLORS.red,
+      });
+      this.drawText(detail.notice ? `Aviso: ${detail.notice}` : "", PAGE_MARGIN + width - 95, this.y - 18, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.blue,
+      });
+      this.drawText(detail.date, PAGE_MARGIN + width - 52, this.y - 18, {
+        size: 7,
+        color: COLORS.muted,
+      });
+      this.drawText(`Aseguradora: ${detail.insurer || "No disponible"}`, PAGE_MARGIN + CARD_PADDING, this.y - 34, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+      });
+      this.drawText(`V. asegurado: ${detail.insuredValue || "No disponible"}`, PAGE_MARGIN + 160, this.y - 34, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+      });
+      this.drawText(detail.status || "Estado no disponible", PAGE_MARGIN + CARD_PADDING, this.y - 50, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.slate,
+      });
+      this.drawText(`Reportado: ${detail.reported || "No disponible"}`, PAGE_MARGIN + 160, this.y - 50, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.red,
+      });
+      this.drawText(`Pagado: ${detail.paid || "No disponible"}`, PAGE_MARGIN + 320, this.y - 50, {
+        font: this.fonts.bold,
+        size: 7,
+        color: COLORS.green,
+      });
+
+      this.y -= height + 8;
+    }
+  }
+
+  private drawInsuredValueHistory(rows: InsuredValueRow[]) {
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const rowHeight = 18;
+    const height = 34 + rows.length * rowHeight;
+    this.ensureSpace(height);
+    this.drawCard(PAGE_MARGIN, this.y - height, width, height);
+
+    const columns = [
+      { label: "Año", x: PAGE_MARGIN + 12, width: 70 },
+      { label: "Valor asegurado", x: PAGE_MARGIN + 110, width: 105 },
+      { label: "Aseguradora", x: PAGE_MARGIN + 245, width: 140 },
+      { label: "Variación", x: PAGE_MARGIN + width - 82, width: 70 },
+    ];
+
+    for (const column of columns) {
+      this.drawSmallCaps(column.label, column.x, this.y - 16, 6.5);
+    }
+
+    let rowY = this.y - 34;
+    for (const row of rows.slice(-8)) {
+      this.drawText(row.year, columns[0].x, rowY, {
+        font: this.fonts.bold,
+        size: 7.5,
+        color: COLORS.slate,
+      });
+      this.drawText(row.value, columns[1].x, rowY, {
+        font: this.fonts.bold,
+        size: 7.5,
+        color: COLORS.slate,
+      });
+      this.drawWrappedText(row.insurer, columns[2].x, rowY, columns[2].width, {
+        size: 7,
+        color: COLORS.slate,
+        lineHeight: 8,
+      });
+      this.drawText(row.variation || "-", columns[3].x, rowY, {
+        font: this.fonts.bold,
+        size: 7.5,
+        color: row.variation.startsWith("▲") ? COLORS.green : row.variation.startsWith("▼") ? COLORS.red : COLORS.muted,
+      });
+
+      rowY -= rowHeight;
+    }
+
+    this.y -= height + 10;
+  }
+
+  private drawHealthInsurance(healthInsurance: HealthInsurance) {
+    this.drawKeyValueGrid(healthInsurance.summary, 4);
+
+    if (healthInsurance.continuityIndex || healthInsurance.insurers.length > 0 || healthInsurance.coverageByYear.length > 0) {
+      const width = A4_WIDTH - PAGE_MARGIN * 2;
+      const height = 74;
+      this.ensureSpace(height);
+      this.drawCard(PAGE_MARGIN, this.y - height, width, height);
+      this.drawSmallCaps("Índice de continuidad", PAGE_MARGIN + CARD_PADDING, this.y - 16, 6.5);
+      this.drawText(healthInsurance.continuityIndex || "No disponible", PAGE_MARGIN + CARD_PADDING, this.y - 31, {
+        font: this.fonts.bold,
+        size: 8,
+        color: COLORS.green,
+      });
+      this.drawSmallCaps("Aseguradoras", PAGE_MARGIN + 190, this.y - 16, 6.5);
+      this.drawWrappedText(healthInsurance.insurers.join(", ") || "No disponible", PAGE_MARGIN + 190, this.y - 31, 155, {
+        font: this.fonts.bold,
+        size: 8,
+        color: COLORS.slate,
+        lineHeight: 9,
+      });
+      this.drawSmallCaps("Coberturas por año", PAGE_MARGIN + 365, this.y - 16, 6.5);
+      this.drawWrappedText(healthInsurance.coverageByYear.join(" · ") || "No disponible", PAGE_MARGIN + 365, this.y - 31, 160, {
+        font: this.fonts.bold,
+        size: 7.5,
+        color: COLORS.slate,
+        lineHeight: 9,
+      });
+      this.y -= height + 10;
+    }
+  }
+
+  private drawRelatedPeople(relatedPeople: RelatedPeople) {
+    this.drawKeyValueGrid(relatedPeople.summary, 4);
+
+    if (relatedPeople.roleCounts.length > 0) {
+      this.drawKeyValueGrid(relatedPeople.roleCounts, Math.min(3, relatedPeople.roleCounts.length));
+    }
+
+    if (relatedPeople.note) {
+      this.drawTextCard(relatedPeople.note);
+    }
+
+    if (relatedPeople.current.length > 0) {
+      this.drawSmallPeopleHeading("Actualmente vinculados", COLORS.green);
+      for (const person of relatedPeople.current) {
+        this.drawRelatedPersonCard(person, COLORS.green);
+      }
+    }
+
+    if (relatedPeople.previous.length > 0) {
+      this.drawSmallPeopleHeading("Historial anterior", COLORS.muted);
+      for (const person of relatedPeople.previous) {
+        this.drawRelatedPersonCard(person, COLORS.muted);
+      }
+    }
+  }
+
+  private drawSmallPeopleHeading(label: string, color: ReturnType<typeof rgb>) {
+    this.ensureSpace(22);
+    this.page.drawCircle({
+      x: PAGE_MARGIN + 4,
+      y: this.y - 8,
+      size: 3,
+      color,
+    });
+    this.drawText(label.toUpperCase(), PAGE_MARGIN + 14, this.y - 11, {
+      font: this.fonts.bold,
+      size: 8,
+      color: COLORS.slate,
+    });
+    this.y -= 22;
+  }
+
+  private drawRelatedPersonCard(person: RelatedPerson, accent: ReturnType<typeof rgb>) {
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const height = 62;
+    this.ensureSpace(height);
+    this.drawCard(PAGE_MARGIN, this.y - height, width, height);
+    this.page.drawCircle({
+      x: PAGE_MARGIN + CARD_PADDING + 10,
+      y: this.y - 30,
+      size: 14,
+      color: rgb(0.93, 0.96, 1),
+    });
+    this.drawText(person.kind, PAGE_MARGIN + CARD_PADDING - 1, this.y - 33, {
+      font: this.fonts.bold,
+      size: 7,
+      color: COLORS.muted,
+    });
+    this.drawText(person.name || "No disponible", PAGE_MARGIN + 58, this.y - 21, {
+      font: this.fonts.bold,
+      size: 10,
+      color: COLORS.slate,
+    });
+    if (person.status) {
+      this.drawText(person.status, PAGE_MARGIN + 190, this.y - 21, {
+        font: this.fonts.bold,
+        size: 8,
+        color: accent,
+      });
+    }
+
+    this.drawWrappedText(
+      [
+        person.roles.join(", "),
+        person.period,
+        person.policies,
+        person.insurer,
+      ].filter(Boolean).join(" · "),
+      PAGE_MARGIN + 58,
+      this.y - 40,
+      width - 72,
+      {
+        size: 8,
+        color: COLORS.slate,
+        lineHeight: 9,
+      },
+    );
+    this.y -= height + 8;
   }
 
   private drawRiskCategories(categories: RiskCategory[]) {
