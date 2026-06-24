@@ -15,8 +15,8 @@ function redirectIfUnauthorized(res: Response) {
 export function AutocheckPdfPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [includeModel2020Notice, setIncludeModel2020Notice] = useState(false);
-  const [includeContactNumbers, setIncludeContactNumbers] = useState(false);
+  const [includeModel2020Notice, setIncludeModel2020Notice] = useState(true);
+  const [includeContactNumbers, setIncludeContactNumbers] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -82,8 +82,8 @@ export function AutocheckPdfPanel() {
 
   function handleReset() {
     setSelectedFile(null);
-    setIncludeModel2020Notice(false);
-    setIncludeContactNumbers(false);
+    setIncludeModel2020Notice(true);
+    setIncludeContactNumbers(true);
     setError(null);
     setSuccessMessage(null);
     if (fileInputRef.current) {

@@ -30,6 +30,10 @@ const COLORS = {
   white: rgb(1, 1, 1),
 };
 
+const LIABILITY_NOTICE_TITLE = "Aviso de Responsabilidad - AutoCheck";
+const LIABILITY_NOTICE_TEXT =
+  "La información suministrada por AutoCheck proviene de fuentes públicas y privadas autorizadas, y se presenta de manera informativa para apoyar los procesos de verificación, debida diligencia y gestión de riesgos en la compra y venta de vehículos usados. Los resultados reflejan los registros encontrados en las bases de datos consultadas al momento de la verificación. La existencia de reportes, alertas o antecedentes no constituye prueba de responsabilidad, culpabilidad o irregularidad por parte de las personas o vehículos consultados. AutoCheck no garantiza la exactitud, vigencia o actualización permanente de la información suministrada por terceros y no asume responsabilidad por las decisiones comerciales, financieras o legales que el usuario adopte con base en este informe.";
+
 const TECHNICAL_LABELS = [
   "CILINDRAJE",
   "COMBUSTIBLE",
@@ -113,6 +117,12 @@ type RiskCategory = {
   note: string;
 };
 
+type ClaimSubDetail = {
+  status: string;
+  reported: string;
+  paid: string;
+};
+
 type ClaimDetail = {
   id: string;
   notice: string;
@@ -122,6 +132,7 @@ type ClaimDetail = {
   status: string;
   reported: string;
   paid: string;
+  subclaims: ClaimSubDetail[];
 };
 
 type ClaimAnalysis = {
@@ -169,12 +180,18 @@ type ValuationReport = {
   projections: KeyValue[];
 };
 
+type CoverageDetail = {
+  label: string;
+  covered: boolean;
+};
+
 type InsuranceReport = {
   summary: KeyValue[];
   status: string;
   available: string;
   insuredValue: string;
   coverages: string[];
+  coverageDetails: CoverageDetail[];
   note: string;
 };
 
@@ -739,15 +756,22 @@ function parseHealthInsurance(section: string[]): HealthInsurance {
 
 function parseInsuranceReport(section: string[]): InsuranceReport {
   if (section.length === 0) {
-    return { summary: [], status: "", available: "", insuredValue: "", coverages: [], note: "" };
+    return { summary: [], status: "", available: "", insuredValue: "", coverages: [], coverageDetails: [], note: "" };
   }
 
   const body = section.filter(Boolean);
   const entries: KeyValue[] = [];
   const joined = body.join(" ");
   const statusLabelIndex = findTokenIndex(body, "ESTADO DE PÓLIZA");
-  const status = statusLabelIndex > 0 ? body[statusLabelIndex - 1] : body[0] ?? "";
-  const availability = statusLabelIndex >= 0 ? body[statusLabelIndex + 1] ?? "" : "";
+  const rawStatus = statusLabelIndex > 0 ? body.slice(0, statusLabelIndex).join(" ") : body[0] ?? "";
+  const status = rawStatus
+    .replace(/\b(NO)\s*\/\s*(\d{2})\s*\/\s*(\d{2})\s*\/\s*(\d{2})\b/i, "$1 / $2/$3/$4")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  const availabilityCandidate = statusLabelIndex >= 0 ? body[statusLabelIndex + 1] ?? "" : "";
+  const availability = /^(Disponible|Dato orientativo|No disponible)/i.test(availabilityCandidate)
+    ? availabilityCandidate
+    : "";
   const date = joined.match(/\d{2}\s*\/\s*\d{2}\s*\/\s*\d{4}/)?.[0].replace(/\s+/g, "") ??
     joined.match(/\d{2}\s*\/\s*\d{4}/)?.[0].replace(/\s+/g, "") ??
     body.find((value) => /^\d{2}\/\d{2}\/\d{4}$/.test(value)) ??
@@ -783,7 +807,7 @@ function parseInsuranceReport(section: string[]): InsuranceReport {
   const coverageTokens = coverageIndex >= 0
     ? body.slice(coverageStart, noteIndex >= 0 ? noteIndex : undefined)
     : [];
-  const coverages: string[] = [];
+  const coverageDetails: CoverageDetail[] = [];
   let currentCoverage: string[] = [];
 
   for (const token of coverageTokens) {
@@ -791,12 +815,17 @@ function parseInsuranceReport(section: string[]): InsuranceReport {
       continue;
     }
 
-    if (token === "✓") {
+    if (token === "✓" || token === "✗") {
       const coverage = currentCoverage
         .filter((value) => value !== "undefined")
         .join(" ")
         .trim();
-      if (coverage) coverages.push(coverage);
+      if (coverage) {
+        coverageDetails.push({
+          label: coverage,
+          covered: token === "✓",
+        });
+      }
       currentCoverage = [];
       continue;
     }
@@ -809,13 +838,45 @@ function parseInsuranceReport(section: string[]): InsuranceReport {
     status,
     available: availability,
     insuredValue,
-    coverages: uniqueKeepOrder(coverages),
+    coverages: uniqueKeepOrder(coverageDetails.filter((coverage) => coverage.covered).map((coverage) => coverage.label)),
+    coverageDetails,
     note: noteIndex >= 0 ? body[noteIndex] : "",
   };
 }
 
 function parseInsurance(section: string[]) {
   return parseInsuranceReport(section).summary;
+}
+
+function isClaimStatusToken(value: string) {
+  return /^(OTROS|PPD|PTD|PTH|RC|RC BIENES|RC PERSONAS)\b/i.test(value);
+}
+
+function parseClaimSubDetails(block: string[]) {
+  const subclaims: ClaimSubDetail[] = [];
+
+  for (let index = 0; index < block.length; index += 1) {
+    if (!isClaimStatusToken(block[index])) {
+      continue;
+    }
+
+    const nextStatusIndex = block.findIndex((value, candidateIndex) =>
+      candidateIndex > index && isClaimStatusToken(value),
+    );
+    const subBlock = block.slice(index, nextStatusIndex >= 0 ? nextStatusIndex : undefined);
+    const reportedIndex = findTokenIndex(subBlock, "Reportado:");
+    const paidIndex = findTokenIndex(subBlock, "Pagado:");
+
+    subclaims.push({
+      status: subBlock[0],
+      reported: reportedIndex >= 0 ? collectMoneyAfter(subBlock, reportedIndex) : "",
+      paid: paidIndex >= 0 ? collectMoneyAfter(subBlock, paidIndex) : "",
+    });
+
+    index = nextStatusIndex >= 0 ? nextStatusIndex - 1 : block.length;
+  }
+
+  return subclaims;
 }
 
 function parseClaimAnalysis(section: string[]): ClaimAnalysis {
@@ -851,7 +912,8 @@ function parseClaimAnalysis(section: string[]): ClaimAnalysis {
     const insuredValueIndex = findTokenIndex(block, "V. Asegurado:");
     const reportedIndex = findTokenIndex(block, "Reportado:");
     const paidDetailIndex = findTokenIndex(block, "Pagado:");
-    const status = block.find((value) => /^PPD|^PTD|^PTH|^RC/i.test(value)) ?? "";
+    const subclaims = parseClaimSubDetails(block);
+    const status = subclaims[0]?.status ?? "";
 
     details.push({
       id: block[0],
@@ -862,6 +924,7 @@ function parseClaimAnalysis(section: string[]): ClaimAnalysis {
       status,
       reported: reportedIndex >= 0 ? collectMoneyAfter(block, reportedIndex) : "",
       paid: paidDetailIndex >= 0 ? collectMoneyAfter(block, paidDetailIndex) : "",
+      subclaims,
     });
   }
 
@@ -1114,43 +1177,43 @@ class ReportRenderer {
 
     await this.drawHeader(report);
     this.drawVehicleAndScore(report);
-    this.drawSectionTitle("Ficha técnica");
+    this.drawSectionTitle("Ficha técnica", 42);
     this.drawKeyValueGrid(report.technicalSpecs, 4);
-    this.ensureSpace(150);
-    this.drawSectionTitle("Valoración Fasecolda");
+    this.drawSectionTitle("Valoración Fasecolda", 112);
     this.drawValuation(report.valuationDetail);
-    this.ensureSpace(175);
-    this.drawSectionTitle("Seguro todo riesgo");
+    this.drawSectionTitle("Seguro todo riesgo", 70);
     this.drawInsurance(report.insuranceDetail);
 
     if (report.claimAnalysis.summary.length > 0 || report.claimAnalysis.details.length > 0) {
-      this.drawSectionTitle("Análisis de siniestralidad");
+      this.drawSectionTitle("Análisis de siniestralidad", 50);
       this.drawClaimAnalysis(report.claimAnalysis);
     } else if (report.rawSections.claims.length > 0) {
-      this.drawSectionTitle("Análisis de siniestralidad");
+      this.drawSectionTitle("Análisis de siniestralidad", 45);
       this.drawTextCard(report.rawSections.claims.join(" "));
     }
 
     if (report.healthInsurance.summary.length > 0) {
-      this.drawSectionTitle("Salud aseguradora");
+      this.drawSectionTitle("Salud aseguradora", 42);
       this.drawHealthInsurance(report.healthInsurance);
     }
 
     if (report.insuredValueHistory.length > 0) {
-      this.drawSectionTitle("Historial de valor asegurado");
+      this.drawSectionTitle("Historial de valor asegurado", this.getInsuredValueHistoryHeight(report.insuredValueHistory));
       this.drawInsuredValueHistory(report.insuredValueHistory);
     } else if (report.rawSections.insuredValueHistory.length > 0) {
-      this.drawSectionTitle("Historial de valor asegurado");
+      this.drawSectionTitle("Historial de valor asegurado", 45);
       this.drawTextCard(report.rawSections.insuredValueHistory.join(" "));
     }
 
     if (report.riskCategories.length > 0) {
-      this.drawSectionTitle("Riesgos por categoría");
+      this.drawSectionTitle("Riesgos por categoría", 58);
       this.drawRiskCategories(report.riskCategories);
     }
 
-    this.drawSectionTitle("Personas relacionadas");
+    this.drawSectionTitle("Personas relacionadas", 42);
     this.drawRelatedPeople(report.relatedPeople);
+
+    this.drawLiabilityNotice();
 
     this.drawFooter();
   }
@@ -1438,17 +1501,23 @@ class ReportRenderer {
       size: radius * 0.72,
       color: COLORS.white,
     });
-    this.page.drawText(String(score || "-"), {
-      x: centerX - 13,
-      y: centerY - 5,
-      size: 22,
+    const scoreText = String(score || "-");
+    const scoreSize = 22;
+    const scoreWidth = this.fonts.bold.widthOfTextAtSize(scoreText, scoreSize);
+    this.page.drawText(scoreText, {
+      x: centerX - scoreWidth / 2,
+      y: centerY - 3,
+      size: scoreSize,
       font: this.fonts.bold,
       color: COLORS.slate,
     });
-    this.page.drawText("/100", {
-      x: centerX - 10,
-      y: centerY - 18,
-      size: 7,
+    const denominator = "/100";
+    const denominatorSize = 7;
+    const denominatorWidth = this.fonts.regular.widthOfTextAtSize(denominator, denominatorSize);
+    this.page.drawText(denominator, {
+      x: centerX - denominatorWidth / 2,
+      y: centerY - 16,
+      size: denominatorSize,
       font: this.fonts.regular,
       color: COLORS.slate,
     });
@@ -1591,16 +1660,19 @@ class ReportRenderer {
     });
 
     if (insurance.available) {
-      this.drawText(insurance.available, PAGE_MARGIN + 10, topY - 63, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.green,
-      });
+      this.drawAvailabilityBadge(insurance.available, PAGE_MARGIN + 14, topY - 78);
     }
 
-    this.y -= summaryHeight + 22;
+    this.y -= summaryHeight + (insurance.available ? 48 : 24);
 
-    const chips = insurance.coverages.length > 0 ? insurance.coverages : ["Coberturas no disponibles"];
+    const chips = insurance.coverageDetails.length > 0
+      ? insurance.coverageDetails
+      : insurance.coverages.map((coverage) => ({ label: coverage, covered: true }));
+
+    if (chips.length === 0) {
+      return;
+    }
+
     const columns = 3;
     const chipGap = 6;
     const chipWidth = (width - CARD_PADDING * 2 - chipGap * (columns - 1)) / columns;
@@ -1610,37 +1682,38 @@ class ReportRenderer {
     const coverageTopY = this.y;
     this.drawCard(PAGE_MARGIN, coverageTopY - coverageHeight, width, coverageHeight);
     this.drawSmallCaps("Coberturas póliza vigente", PAGE_MARGIN + CARD_PADDING, coverageTopY - 18, 6.5);
-    this.drawText(`V. asegurado: ${insurance.insuredValue || "No disponible"}`, PAGE_MARGIN + width - 150, coverageTopY - 18, {
-      font: this.fonts.bold,
-      size: 8,
-      color: COLORS.slate,
-    });
+    if (insurance.insuredValue) {
+      this.drawText(`V. asegurado: ${insurance.insuredValue}`, PAGE_MARGIN + width - 150, coverageTopY - 18, {
+        font: this.fonts.bold,
+        size: 8,
+        color: COLORS.slate,
+      });
+    }
 
     chips.forEach((coverage, index) => {
       const row = Math.floor(index / columns);
       const col = index % columns;
       const x = PAGE_MARGIN + CARD_PADDING + col * (chipWidth + chipGap);
       const y = coverageTopY - 48 - row * 24;
+      const fill = coverage.covered ? rgb(0.93, 1, 0.96) : rgb(0.97, 0.98, 0.99);
+      const border = coverage.covered ? rgb(0.45, 0.86, 0.64) : COLORS.border;
+      const color = coverage.covered ? rgb(0.06, 0.4, 0.28) : COLORS.muted;
       this.page.drawRectangle({
         x,
         y,
         width: chipWidth,
         height: 18,
-        color: rgb(0.93, 1, 0.96),
-        borderColor: rgb(0.45, 0.86, 0.64),
+        color: fill,
+        borderColor: border,
         borderWidth: 0.7,
       });
-      this.drawWrappedText(coverage, x + 8, y + 5, chipWidth - 24, {
+      this.drawWrappedText(coverage.label, x + 8, y + 5, chipWidth - 26, {
         font: this.fonts.bold,
         size: 7,
-        color: rgb(0.06, 0.4, 0.28),
+        color,
         lineHeight: 8,
       });
-      this.drawText("Si", x + chipWidth - 16, y + 5, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.green,
-      });
+      this.drawCoverageMark(x + chipWidth - 15, y + 7, coverage.covered);
     });
 
     if (insurance.note) {
@@ -1654,6 +1727,68 @@ class ReportRenderer {
     this.y -= coverageHeight + 10;
   }
 
+  private drawAvailabilityBadge(label: string, x: number, y: number) {
+    const isAvailable = /disponible/i.test(label);
+    const textColor = isAvailable ? rgb(0.06, 0.45, 0.28) : rgb(0.72, 0.32, 0.02);
+    const borderColor = isAvailable ? rgb(0.45, 0.86, 0.64) : rgb(0.96, 0.74, 0.28);
+    const fillColor = isAvailable ? rgb(0.93, 1, 0.96) : rgb(1, 0.98, 0.9);
+    const labelWidth = this.fonts.bold.widthOfTextAtSize(label, 7);
+    const badgeWidth = Math.max(72, labelWidth + 24);
+    const badgeHeight = 18;
+
+    this.page.drawRectangle({
+      x,
+      y,
+      width: badgeWidth,
+      height: badgeHeight,
+      color: fillColor,
+      borderColor,
+      borderWidth: 0.7,
+    });
+    this.page.drawCircle({
+      x: x + 9,
+      y: y + badgeHeight / 2,
+      size: 3,
+      color: isAvailable ? COLORS.green : COLORS.yellow,
+    });
+    this.drawText(label, x + 16, y + 6, {
+      font: this.fonts.bold,
+      size: 7,
+      color: textColor,
+    });
+  }
+
+  private drawCoverageMark(x: number, y: number, covered: boolean) {
+    if (covered) {
+      this.page.drawLine({
+        start: { x, y: y + 2 },
+        end: { x: x + 3, y: y - 1 },
+        thickness: 1.4,
+        color: COLORS.green,
+      });
+      this.page.drawLine({
+        start: { x: x + 3, y: y - 1 },
+        end: { x: x + 8, y: y + 6 },
+        thickness: 1.4,
+        color: COLORS.green,
+      });
+      return;
+    }
+
+    this.page.drawLine({
+      start: { x, y },
+      end: { x: x + 7, y: y + 7 },
+      thickness: 1.2,
+      color: COLORS.muted,
+    });
+    this.page.drawLine({
+      start: { x: x + 7, y },
+      end: { x, y: y + 7 },
+      thickness: 1.2,
+      color: COLORS.muted,
+    });
+  }
+
   private drawClaimAnalysis(claimAnalysis: ClaimAnalysis) {
     if (claimAnalysis.summary.length > 0) {
       this.drawKeyValueGrid(claimAnalysis.summary, 4);
@@ -1661,7 +1796,11 @@ class ReportRenderer {
 
     for (const detail of claimAnalysis.details) {
       const width = A4_WIDTH - PAGE_MARGIN * 2;
-      const height = 70;
+      const subclaims = detail.subclaims.length > 0
+        ? detail.subclaims
+        : [{ status: detail.status, reported: detail.reported, paid: detail.paid }];
+      const subRowHeight = 30;
+      const height = 58 + subclaims.length * subRowHeight;
       this.ensureSpace(height);
       this.drawCard(PAGE_MARGIN, this.y - height, width, height);
 
@@ -1689,21 +1828,35 @@ class ReportRenderer {
         size: 7,
         color: COLORS.slate,
       });
-      this.drawText(detail.status || "Estado no disponible", PAGE_MARGIN + CARD_PADDING, this.y - 50, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.slate,
-      });
-      this.drawText(`Reportado: ${detail.reported || "No disponible"}`, PAGE_MARGIN + 160, this.y - 50, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.red,
-      });
-      this.drawText(`Pagado: ${detail.paid || "No disponible"}`, PAGE_MARGIN + 320, this.y - 50, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.green,
-      });
+
+      let subY = this.y - 58;
+      for (const subclaim of subclaims) {
+        this.page.drawRectangle({
+          x: PAGE_MARGIN + CARD_PADDING,
+          y: subY - 9,
+          width: width - CARD_PADDING * 2,
+          height: 24,
+          color: COLORS.panel,
+          borderColor: COLORS.border,
+          borderWidth: 0.6,
+        });
+        this.drawText(subclaim.status || "Estado no disponible", PAGE_MARGIN + CARD_PADDING + 9, subY + 4, {
+          font: this.fonts.bold,
+          size: 7,
+          color: COLORS.slate,
+        });
+        this.drawText(`Reportado: ${subclaim.reported || "No disponible"}`, PAGE_MARGIN + 170, subY + 4, {
+          font: this.fonts.bold,
+          size: 7,
+          color: COLORS.red,
+        });
+        this.drawText(`Pagado: ${subclaim.paid || "No disponible"}`, PAGE_MARGIN + 345, subY + 4, {
+          font: this.fonts.bold,
+          size: 7,
+          color: COLORS.green,
+        });
+        subY -= subRowHeight;
+      }
 
       this.y -= height + 8;
     }
@@ -1712,7 +1865,8 @@ class ReportRenderer {
   private drawInsuredValueHistory(rows: InsuredValueRow[]) {
     const width = A4_WIDTH - PAGE_MARGIN * 2;
     const rowHeight = 18;
-    const height = 34 + rows.length * rowHeight;
+    const displayRows = rows.slice(-8);
+    const height = this.getInsuredValueHistoryHeight(rows);
     this.ensureSpace(height);
     this.drawCard(PAGE_MARGIN, this.y - height, width, height);
 
@@ -1728,7 +1882,7 @@ class ReportRenderer {
     }
 
     let rowY = this.y - 34;
-    for (const row of rows.slice(-8)) {
+    for (const row of displayRows) {
       this.drawText(row.year, columns[0].x, rowY, {
         font: this.fonts.bold,
         size: 7.5,
@@ -1754,6 +1908,11 @@ class ReportRenderer {
     }
 
     this.y -= height + 10;
+  }
+
+  private getInsuredValueHistoryHeight(rows: InsuredValueRow[]) {
+    const rowHeight = 18;
+    return 34 + Math.min(rows.length, 8) * rowHeight;
   }
 
   private drawHealthInsurance(healthInsurance: HealthInsurance) {
@@ -2012,8 +2171,35 @@ class ReportRenderer {
     this.y -= height + 10;
   }
 
-  private drawSectionTitle(title: string) {
-    this.ensureSpace(28);
+  private drawLiabilityNotice() {
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const textSize = 6.2;
+    const lineHeight = 8;
+    const lines = wrapText(LIABILITY_NOTICE_TEXT, this.fonts.regular, textSize, width - 24);
+    const height = 34 + lines.length * lineHeight;
+    const topMargin = 18;
+
+    this.ensureSpace(height + topMargin);
+    this.y -= topMargin;
+    this.drawCard(PAGE_MARGIN, this.y - height, width, height);
+    this.drawText(LIABILITY_NOTICE_TITLE, PAGE_MARGIN + CARD_PADDING, this.y - 14, {
+      font: this.fonts.bold,
+      size: 7,
+      color: COLORS.blue,
+    });
+    this.drawWrappedText(LIABILITY_NOTICE_TEXT, PAGE_MARGIN + CARD_PADDING, this.y - 28, width - 24, {
+      size: textSize,
+      color: COLORS.muted,
+      lineHeight,
+    });
+    this.y -= height + 10;
+  }
+
+  private drawSectionTitle(title: string, reservedContentHeight = 0) {
+    const isNearPageTop = this.y > A4_HEIGHT - PAGE_MARGIN - 12;
+    const topMargin = isNearPageTop ? 0 : 14;
+    this.ensureSpace(28 + topMargin + reservedContentHeight);
+    this.y -= topMargin;
     this.drawSectionHeading(title, PAGE_MARGIN, this.y - 5);
     this.page.drawLine({
       start: { x: PAGE_MARGIN, y: this.y - 13 },
