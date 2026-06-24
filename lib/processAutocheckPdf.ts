@@ -1193,7 +1193,7 @@ class ReportRenderer {
     }
 
     if (report.healthInsurance.summary.length > 0) {
-      this.drawSectionTitle("Salud aseguradora", 42);
+      this.drawSectionTitle("Salud aseguradora", this.getHealthInsuranceHeight(report.healthInsurance));
       this.drawHealthInsurance(report.healthInsurance);
     }
 
@@ -1947,6 +1947,11 @@ class ReportRenderer {
     }
   }
 
+  private getHealthInsuranceHeight(healthInsurance: HealthInsurance) {
+    const hasDetails = healthInsurance.continuityIndex || healthInsurance.insurers.length > 0 || healthInsurance.coverageByYear.length > 0;
+    return this.getKeyValueGridHeight(healthInsurance.summary, 4) + (hasDetails ? 84 : 0);
+  }
+
   private drawRelatedPeople(relatedPeople: RelatedPeople) {
     this.drawKeyValueGrid(relatedPeople.summary, 4);
 
@@ -2138,6 +2143,16 @@ class ReportRenderer {
     if (col !== 0) {
       this.y -= rowHeight + gap;
     }
+  }
+
+  private getKeyValueGridHeight(entries: KeyValue[], columns: number) {
+    if (entries.length === 0) {
+      return 0;
+    }
+
+    const gap = 8;
+    const rowHeight = 42;
+    return Math.ceil(entries.length / columns) * (rowHeight + gap);
   }
 
   private drawInlinePairs(entries: KeyValue[], x: number, y: number, width: number, columns: number) {
