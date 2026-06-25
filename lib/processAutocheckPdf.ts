@@ -782,16 +782,17 @@ function parseInsuranceReport(section: string[]): InsuranceReport {
     ? body[insurerLabelIndex - 1]
     : body.find((value, index) => index > 0 && /^[A-ZÁÉÍÓÚÑ0-9 -]{2,}$/.test(value) && !/^(Vigente|Sin póliza|N\/A|NO|ESTADO DE PÓLIZA|VENCIMIENTO)/i.test(value)) ?? "";
   const claimsLabelIndex = findTokenIndex(body, "RECLAMACIONES");
-  const claims = claimsLabelIndex > 1 && /reportes?/i.test(body[claimsLabelIndex - 1])
+  const rawClaims = claimsLabelIndex > 1 && /reportes?/i.test(body[claimsLabelIndex - 1])
     ? `${body[claimsLabelIndex - 2]} ${body[claimsLabelIndex - 1]}`.trim()
     : claimsLabelIndex > 0
       ? body[claimsLabelIndex - 1]
     : body.find((value) => /reportes?/i.test(value)) ?? "";
+  const claims = normalizeInsuranceClaims(rawClaims);
 
   if (status) entries.push({ label: "Estado", value: status });
   if (date) entries.push({ label: "Vencimiento", value: date });
   if (insurer) entries.push({ label: "Aseguradora", value: insurer });
-  if (claims) entries.push({ label: "Reclamaciones", value: claims });
+  entries.push({ label: "Reclamaciones", value: claims });
 
   const insuredValueToken = body.find((value) => value.startsWith("V. Asegurado:"));
   const insuredValueIndex = insuredValueToken ? findTokenIndex(body, insuredValueToken) : -1;
@@ -842,6 +843,20 @@ function parseInsuranceReport(section: string[]): InsuranceReport {
     coverageDetails,
     note: noteIndex >= 0 ? body[noteIndex] : "",
   };
+}
+
+function normalizeInsuranceClaims(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized || /sin información|no disponible|n\/a/i.test(normalized) || /^0\s+reportes?/i.test(normalized)) {
+    return "Sin reclamaciones";
+  }
+
+  return normalized;
+}
+
+function hasInsuranceClaims(value: string) {
+  const match = normalizeText(value).match(/\b(\d+)\s+reportes?\b/i);
+  return match ? Number(match[1]) > 0 : !/sin reclamaciones/i.test(value);
 }
 
 function parseInsurance(section: string[]) {
@@ -1636,11 +1651,16 @@ class ReportRenderer {
     const topY = this.y;
     summary.forEach((entry, index) => {
       const x = PAGE_MARGIN + index * (cardWidth + gap);
+      const isClaims = /reclamaciones/i.test(entry.label);
+      if (isClaims) {
+        this.drawClaimsSummaryCard(entry, x, topY, cardWidth, summaryHeight);
+        return;
+      }
+
+      const hasClaims = isClaims && hasInsuranceClaims(entry.value);
       const accent = /estado/i.test(entry.label)
         ? (/vigente|disponible/i.test(entry.value) ? COLORS.green : riskColor(entry.value))
-        : /reclamaciones/i.test(entry.label) && /[1-9]/.test(entry.value)
-          ? COLORS.yellow
-          : COLORS.blue;
+        : COLORS.blue;
       this.page.drawRectangle({
         x,
         y: topY - summaryHeight,
@@ -1727,6 +1747,63 @@ class ReportRenderer {
     this.y -= coverageHeight + 10;
   }
 
+  private drawClaimsSummaryCard(entry: KeyValue, x: number, topY: number, width: number, height: number) {
+    const hasClaims = hasInsuranceClaims(entry.value);
+    const topFill = hasClaims ? rgb(0.95, 0.49, 0.02) : rgb(0.08, 0.66, 0.21);
+    const bottomFill = hasClaims ? rgb(0.95, 0.36, 0.01) : rgb(0.02, 0.52, 0.18);
+    const accent = hasClaims ? rgb(0.94, 0.48, 0.02) : COLORS.green;
+    const iconCenterX = x + 24;
+    const dividerX = x + 46;
+    const textX = x + 54;
+
+    this.page.drawRectangle({
+      x,
+      y: topY - height,
+      width,
+      height,
+      color: bottomFill,
+      borderColor: accent,
+      borderWidth: 1.6,
+    });
+    this.page.drawRectangle({
+      x: x + 2,
+      y: topY - height + 2,
+      width: width - 4,
+      height: height / 2,
+      color: bottomFill,
+    });
+    this.page.drawRectangle({
+      x: x + 2,
+      y: topY - height / 2,
+      width: width - 4,
+      height: height / 2 - 2,
+      color: topFill,
+    });
+
+    if (hasClaims) {
+      this.drawClaimsAlertIcon(iconCenterX, topY - 24, accent);
+    } else {
+      this.drawClaimsShieldIcon(x + 18, topY - 34);
+    }
+
+    this.page.drawLine({
+      start: { x: dividerX, y: topY - 38 },
+      end: { x: dividerX, y: topY - 10 },
+      thickness: 0.8,
+      color: COLORS.white,
+      opacity: 0.9,
+    });
+
+    const valueText = hasClaims ? entry.value : "Sin\nreclamaciones";
+    this.drawWrappedText(valueText, textX, topY - 16, width - 64, {
+      font: this.fonts.bold,
+      size: hasClaims ? 12 : 9,
+      color: COLORS.white,
+      lineHeight: hasClaims ? 12 : 9.4,
+    });
+    this.drawSmallCaps(entry.label, textX, topY - 36, 5.2, COLORS.white);
+  }
+
   private drawAvailabilityBadge(label: string, x: number, y: number) {
     const isAvailable = /disponible/i.test(label);
     const textColor = isAvailable ? rgb(0.06, 0.45, 0.28) : rgb(0.72, 0.32, 0.02);
@@ -1755,6 +1832,80 @@ class ReportRenderer {
       font: this.fonts.bold,
       size: 7,
       color: textColor,
+    });
+  }
+
+  private drawClaimsAlertIcon(centerX: number, centerY: number, color: ReturnType<typeof rgb>) {
+    this.page.drawCircle({
+      x: centerX,
+      y: centerY,
+      size: 12,
+      color: rgb(1, 0.98, 0.93),
+      borderColor: color,
+      borderWidth: 0.8,
+    });
+    this.page.drawCircle({
+      x: centerX,
+      y: centerY,
+      size: 9.5,
+      color,
+    });
+    this.drawText("!", centerX - 1.8, centerY - 5.2, {
+      font: this.fonts.bold,
+      size: 14,
+      color: COLORS.white,
+    });
+  }
+
+  private drawClaimsShieldIcon(x: number, y: number) {
+    const lineColor = COLORS.white;
+    this.page.drawLine({
+      start: { x: x + 10, y: y + 24 },
+      end: { x: x + 22, y: y + 19 },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x + 22, y: y + 19 },
+      end: { x: x + 22, y: y + 9 },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x + 22, y: y + 9 },
+      end: { x: x + 10, y: y },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x + 10, y: y },
+      end: { x: x - 2, y: y + 9 },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x - 2, y: y + 9 },
+      end: { x: x - 2, y: y + 19 },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x - 2, y: y + 19 },
+      end: { x: x + 10, y: y + 24 },
+      thickness: 1.5,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x + 4, y: y + 12 },
+      end: { x: x + 9, y: y + 7 },
+      thickness: 2,
+      color: lineColor,
+    });
+    this.page.drawLine({
+      start: { x: x + 9, y: y + 7 },
+      end: { x: x + 17, y: y + 17 },
+      thickness: 2,
+      color: lineColor,
     });
   }
 
@@ -2255,11 +2406,11 @@ class ReportRenderer {
     });
   }
 
-  private drawSmallCaps(text: string, x: number, y: number, size = 7) {
+  private drawSmallCaps(text: string, x: number, y: number, size = 7, color = COLORS.blue) {
     this.drawText(text.toUpperCase(), x, y, {
       font: this.fonts.bold,
       size,
-      color: COLORS.blue,
+      color,
     });
   }
 
