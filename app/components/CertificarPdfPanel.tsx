@@ -19,6 +19,7 @@ export function CertificarPdfPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [queryType, setQueryType] = useState<CertificarQueryType>("PREMIUM");
+  const [addContactNumber, setAddContactNumber] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -44,6 +45,7 @@ export function CertificarPdfPanel() {
       const formData = new FormData();
       formData.append("file", selectedFile);
       formData.append("queryType", queryType);
+      formData.append("addContactNumber", String(addContactNumber));
 
       const response = await fetch("/api/certificar-pdf", {
         method: "POST",
@@ -167,6 +169,23 @@ export function CertificarPdfPanel() {
               Este valor se mostrará en el header como AUTOCHECK {queryType}.
             </p>
           </fieldset>
+
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm text-slate-300 transition hover:border-sky-400/40">
+            <input
+              type="checkbox"
+              checked={addContactNumber}
+              onChange={(event) => setAddContactNumber(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-500 bg-slate-950 text-sky-500 focus:ring-sky-500"
+            />
+            <span>
+              <span className="block font-semibold text-slate-100">
+                Agregar número de contacto
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">
+                Si está activo, se incluirá el WhatsApp 310 552 3591 debajo del logo en el footer.
+              </span>
+            </span>
+          </label>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm text-slate-300">
             <p className="font-semibold text-slate-100">Ajustes aplicados al documento</p>

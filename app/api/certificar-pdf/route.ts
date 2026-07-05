@@ -44,10 +44,11 @@ export async function POST(request: NextRequest) {
   const queryType = typeof queryTypeValue === "string" && isCertificarQueryType(queryTypeValue)
     ? queryTypeValue
     : "PREMIUM";
+  const addContactNumber = formData.get("addContactNumber") !== "false";
 
   try {
     const inputBytes = new Uint8Array(await file.arrayBuffer());
-    const outputBytes = await processCertificarPdf(inputBytes, { queryType });
+    const outputBytes = await processCertificarPdf(inputBytes, { queryType, addContactNumber });
     const outputName = getCertificarPdfOutputFileName(file.name);
 
     return new NextResponse(Buffer.from(outputBytes), {

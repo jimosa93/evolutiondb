@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { PDFDocument, PDFEmbeddedPage, PDFPage, PDFFont, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, PDFEmbeddedPage, PDFImage, PDFPage, PDFFont, StandardFonts, rgb } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const COLORS = {
@@ -18,9 +18,9 @@ const COLORS = {
   black: rgb(0, 0, 0),
 };
 
-const HEADER_HEIGHT = 126;
-const FOOTER_HEIGHT = 92;
-const FOOTER_MASK_HEIGHT = 118;
+const HEADER_HEIGHT = 96;
+const FOOTER_HEIGHT = 78;
+const FOOTER_MASK_HEIGHT = 108;
 
 const CERTIFICAR_QUERY_TYPES = ["RECIENTE", "PLUS", "ELITE", "PREMIUM"] as const;
 
@@ -33,6 +33,7 @@ export type CertificarQueryType = (typeof CERTIFICAR_QUERY_TYPES)[number];
 
 export type ProcessCertificarPdfOptions = {
   queryType?: CertificarQueryType;
+  addContactNumber?: boolean;
 };
 
 type CertificarReport = {
@@ -427,8 +428,10 @@ function drawPlate(page: PDFPage, plate: string, x: number, y: number, width: nu
     borderColor: rgb(0.13, 0.1, 0.04),
     borderWidth: 1,
   });
-  drawCenteredText(page, plate || "-", x + width / 2, y + 29, width - 22, fonts, { bold: true, size: 29, color: COLORS.black });
-  drawCenteredText(page, "COLOMBIA", x + width / 2, y + 14, width - 24, fonts, { bold: true, size: 10, color: rgb(0.2, 0.15, 0.05) });
+  const plateSize = Math.min(22, height * 0.42);
+  const countrySize = Math.min(8.2, height * 0.16);
+  drawCenteredText(page, plate || "-", x + width / 2, y + height * 0.49, width - 24, fonts, { bold: true, size: plateSize, color: COLORS.black });
+  drawCenteredText(page, "COLOMBIA", x + width / 2, y + height * 0.29, width - 26, fonts, { bold: true, size: countrySize, color: rgb(0.2, 0.15, 0.05) });
   page.drawLine({ start: { x: x + 12, y: y + 11 }, end: { x: x + 22, y: y + 11 }, thickness: 2, color: COLORS.black });
   page.drawLine({ start: { x: x + width - 22, y: y + 11 }, end: { x: x + width - 12, y: y + 11 }, thickness: 2, color: COLORS.black });
 }
@@ -442,7 +445,11 @@ async function loadHeaderTemplateBytes() {
 }
 
 async function loadDetailIconsBytes() {
-  return fs.readFile(path.join(process.cwd(), "public", "certificar-detail-icons.png"));
+  return Promise.all(
+    [1, 2, 3, 4, 5, 6].map((index) =>
+      fs.readFile(path.join(process.cwd(), "public", `certificar-detail-icon-${index}.png`)),
+    ),
+  );
 }
 
 async function loadWhatsappIconBytes() {
@@ -455,16 +462,17 @@ class CertificarRenderer {
     private readonly fonts: Fonts,
     private readonly logoBytes: Uint8Array,
     private readonly headerTemplateBytes: Uint8Array,
-    private readonly detailIconsBytes: Uint8Array,
+    private readonly detailIconsBytes: Uint8Array[],
     private readonly whatsappIconBytes: Uint8Array,
     private readonly sourceDoc: PDFDocument,
     private readonly report: CertificarReport,
+    private readonly options: Required<Omit<ProcessCertificarPdfOptions, "queryType">>,
   ) {}
 
   async render() {
     const logo = await this.doc.embedPng(this.logoBytes);
     const headerTemplate = await this.doc.embedPng(this.headerTemplateBytes);
-    const detailIcons = await this.doc.embedPng(this.detailIconsBytes);
+    const detailIcons = await Promise.all(this.detailIconsBytes.map((iconBytes) => this.doc.embedPng(iconBytes)));
     const whatsappIcon = await this.doc.embedPng(this.whatsappIconBytes);
     const pages = this.doc.getPages();
     const sourceQr = await this.embedSourceQr();
@@ -473,6 +481,9 @@ class CertificarRenderer {
       const { width, height } = page.getSize();
       this.maskFooter(page, width);
       this.drawFooter(page, width, FOOTER_HEIGHT, index + 1, pages.length, logo, whatsappIcon, sourceQr);
+      if (index === pages.length - 1) {
+        this.drawLiabilityNotice(page, width, FOOTER_HEIGHT + 12);
+      }
 
       if (index === 0) {
         this.maskHeader(page, width, height);
@@ -503,21 +514,23 @@ class CertificarRenderer {
     width: number,
     height: number,
     headerTemplate: Awaited<ReturnType<PDFDocument["embedPng"]>>,
-    detailIcons: Awaited<ReturnType<PDFDocument["embedPng"]>>,
+    detailIcons: PDFImage[],
   ) {
     const y = height - HEADER_HEIGHT;
     const panelTextX = width - 106;
 
     page.drawImage(headerTemplate, { x: 0, y, width, height: HEADER_HEIGHT });
+    const rightPanelX = width - 140;
 
-    page.drawRectangle({ x: 212, y: y + 23, width: 108, height: 64, color: COLORS.white });
-    drawPlate(page, this.report.plate, 216, y + 27, 100, 54, this.fonts);
+    // Remove the diagonal blue wedge from the template before drawing dynamic content.
+    page.drawRectangle({ x: 390, y, width: rightPanelX - 390, height: HEADER_HEIGHT, color: COLORS.white });
 
-    const detailsX = 349;
-    const detailValueX = 391;
-    const detailValueWidth = width - 152 - detailValueX - 8;
-    page.drawRectangle({ x: 318, y: y + 28, width: detailValueWidth + detailValueX - 300, height: 63, color: COLORS.white });
-    page.drawImage(detailIcons, { x: 327, y: y + 15, width: 11.3, height: 76 });
+    page.drawRectangle({ x: 212, y: y + 2, width: rightPanelX - 212, height: 65, color: COLORS.white });
+    drawPlate(page, this.report.plate, 216, y + 9, 96, 50, this.fonts);
+
+    const detailsX = 342;
+    const detailValueX = 384;
+    const detailValueWidth = rightPanelX - detailValueX - 8;
     const details = [
       ["MARCA:", this.report.brand],
       ["MODELO:", this.report.model],
@@ -527,42 +540,40 @@ class CertificarRenderer {
       ["COMBUSTIBLE:", this.report.fuel],
     ];
     details.forEach(([label, value], index) => {
-      const rowY = y + 83 - index * 13;
+      const rowY = y + 59 - index * 9.2;
+      const icon = detailIcons[index];
+      const iconHeight = 7.8;
+      page.drawImage(icon, {
+        x: 330,
+        y: rowY - 1,
+        width: (icon.width / icon.height) * iconHeight,
+        height: iconHeight,
+      });
       drawText(page, label, detailsX, rowY, this.fonts, {
         bold: true,
-        size: 5.35,
+        size: 4.35,
         color: COLORS.blue,
         maxWidth: detailValueX - detailsX - 4,
       });
       drawText(page, value || "No disponible", detailValueX, rowY, this.fonts, {
-        size: 6.2,
+        size: 4.65,
         color: COLORS.slate,
         maxWidth: detailValueWidth,
       });
     });
 
-    const rightPanelTopX = width - 200;
-    const rightPanelBottomX = width - 158;
-    page.drawSvgPath(`M 0 0 L ${width - rightPanelBottomX} 0 L ${width - rightPanelTopX} ${HEADER_HEIGHT} L 0 ${HEADER_HEIGHT} Z`, {
-      x: rightPanelBottomX,
-      y: y + HEADER_HEIGHT,
-      color: COLORS.darkBlue,
-    });
-    page.drawRectangle({ x: rightPanelTopX, y: height - 8, width: width - rightPanelTopX, height: 5, color: COLORS.midBlue });
-    page.drawRectangle({ x: width - 74, y: y + 104, width: 64, height: 18, borderColor: COLORS.green, borderWidth: 0.7 });
-    drawSmallShieldIcon(page, width - 69, y + 106, COLORS.green);
-    drawText(page, "DOCUMENTO", width - 53, y + 114, this.fonts, { bold: true, size: 3.7, color: COLORS.green });
-    drawText(page, "VERIFICADO", width - 53, y + 109, this.fonts, { bold: true, size: 3.7, color: COLORS.green });
-    drawDocumentIcon(page, width - 134, y + 78, COLORS.white);
-    drawText(page, "INFORME No.", panelTextX, y + 91, this.fonts, { bold: true, size: 7.5, color: COLORS.white });
-    drawText(page, formatReportNumber(this.report), panelTextX, y + 73, this.fonts, { size: 10.5, color: COLORS.white, maxWidth: 94 });
-    page.drawLine({ start: { x: width - 137, y: y + 62 }, end: { x: width - 14, y: y + 62 }, thickness: 0.5, color: rgb(0.35, 0.56, 0.9) });
-    drawCalendarIcon(page, width - 130, y + 34, COLORS.white);
-    drawText(page, "FECHA DE CONSULTA:", panelTextX, y + 45, this.fonts, { bold: true, size: 6.4, color: COLORS.white });
-    drawText(page, this.report.queryDate || "No disponible", panelTextX, y + 33, this.fonts, { size: 6.6, color: COLORS.white, maxWidth: 94 });
-    drawText(page, "TIPO DE CONSULTA:", panelTextX, y + 17, this.fonts, { bold: true, size: 6.4, color: COLORS.white });
-    page.drawRectangle({ x: panelTextX, y: y + 3, width: 84, height: 12, color: COLORS.sky });
-    drawText(page, this.report.queryType, panelTextX + 5, y + 7, this.fonts, { bold: true, size: 5.2, color: COLORS.white, maxWidth: 74 });
+    page.drawRectangle({ x: rightPanelX, y, width: width - rightPanelX, height: HEADER_HEIGHT, color: COLORS.darkBlue });
+    page.drawRectangle({ x: rightPanelX, y: height - 8, width: width - rightPanelX, height: 5, color: COLORS.midBlue });
+    drawDocumentIcon(page, width - 128, y + 66, COLORS.white);
+    drawText(page, "INFORME No.", panelTextX, y + 76, this.fonts, { bold: true, size: 6.2, color: COLORS.white });
+    drawText(page, formatReportNumber(this.report), panelTextX, y + 61, this.fonts, { size: 8.3, color: COLORS.white, maxWidth: 92 });
+    page.drawLine({ start: { x: width - 131, y: y + 52 }, end: { x: width - 14, y: y + 52 }, thickness: 0.5, color: rgb(0.35, 0.56, 0.9) });
+    drawCalendarIcon(page, width - 126, y + 29, COLORS.white);
+    drawText(page, "FECHA DE CONSULTA:", panelTextX, y + 38, this.fonts, { bold: true, size: 5.1, color: COLORS.white });
+    drawText(page, this.report.queryDate || "No disponible", panelTextX, y + 28, this.fonts, { size: 5.4, color: COLORS.white, maxWidth: 92 });
+    drawText(page, "TIPO DE CONSULTA:", panelTextX, y + 13, this.fonts, { bold: true, size: 5.1, color: COLORS.white });
+    page.drawRectangle({ x: panelTextX, y: y + 2, width: 84, height: 9, color: COLORS.sky });
+    drawText(page, this.report.queryType, panelTextX + 5, y + 5, this.fonts, { bold: true, size: 4.45, color: COLORS.white, maxWidth: 74 });
   }
 
   private drawFooter(
@@ -590,8 +601,10 @@ class CertificarRenderer {
     drawIconShield(page, 268, 42, COLORS.blue);
     page.drawImage(logo, { x: 291, y: 44, width: 86, height: (logo.height / logo.width) * 86 });
     page.drawLine({ start: { x: 340, y: 35 }, end: { x: 361, y: 35 }, thickness: 1, color: COLORS.blue });
-    page.drawImage(whatsappIcon, { x: 303, y: 17.5, width: 14, height: (whatsappIcon.height / whatsappIcon.width) * 14 });
-    drawText(page, "310 552 3591", 319, 22, this.fonts, { size: 6.8, color: COLORS.slate });
+    if (this.options.addContactNumber) {
+      page.drawImage(whatsappIcon, { x: 303, y: 17.5, width: 14, height: (whatsappIcon.height / whatsappIcon.width) * 14 });
+      drawText(page, "310 552 3591", 319, 22, this.fonts, { size: 6.8, color: COLORS.slate });
+    }
 
     drawText(page, "CONFIDENCIAL", 392, 58, this.fonts, { bold: true, size: 7.2, color: COLORS.blue });
     drawWrappedText(
@@ -610,6 +623,51 @@ class CertificarRenderer {
     page.drawRectangle({ x: pageColumnX, y: 50, width: pageColumnWidth, height: 16, color: COLORS.darkBlue });
     drawCenteredText(page, "Página", pageColumnCenter, 55, pageColumnWidth - 8, this.fonts, { bold: true, size: 6, color: COLORS.white });
     drawCenteredText(page, `${pageNumber} de ${pageCount}`, pageColumnCenter, 30, pageColumnWidth + 6, this.fonts, { size: 7.4, color: COLORS.slate });
+  }
+
+  private drawLiabilityNotice(page: PDFPage, width: number, y: number) {
+    const x = 13;
+    const noticeWidth = width - 26;
+    const noticeHeight = 90;
+    const columnGap = 14;
+    const columnWidth = (noticeWidth - 28 - columnGap) / 2;
+    const title = "Aviso de Descarga de Responsabilidad — AutoCheck";
+    const leftText =
+      "La información proporcionada por AutoCheck se obtiene de fuentes publicas y se presenta de forma fidedigna. Esta destinada exclusivamente a profesionales en cumplimiento, gestión de riesgos y prevención de actividades ilícitas, con el objetivo de realizar la debida diligencia en la compra y venta de vehículos usados.";
+    const rightText =
+      "La finalidad de AutoCheck es contribuir a la prevención, monitoreo y control del lavado de activos y la financiación del terrorismo en el sector automotriz. La verificación se basa en fuentes publicas; la existencia de un registro no implica culpabilidad. AutoCheck no se responsabiliza por la información reflejada. Las decisiones comerciales son responsabilidad exclusiva del usuario.";
+
+    page.drawRectangle({ x: 0, y: y - 8, width, height: noticeHeight + 36, color: COLORS.white });
+    page.drawRectangle({ x, y, width: noticeWidth, height: noticeHeight, color: rgb(0.97, 0.97, 0.97) });
+    page.drawRectangle({ x, y, width: 3.2, height: noticeHeight, color: rgb(0.24, 0.09, 0.55) });
+    drawCenteredText(page, title, x + noticeWidth / 2, y + noticeHeight - 22, noticeWidth - 80, this.fonts, {
+      size: 7,
+      color: COLORS.slate,
+    });
+    page.drawLine({
+      start: { x: x + 9, y: y + noticeHeight - 31 },
+      end: { x: x + noticeWidth - 9, y: y + noticeHeight - 31 },
+      thickness: 0.4,
+      color: COLORS.border,
+    });
+    page.drawLine({
+      start: { x: x + noticeWidth / 2, y: y + 11 },
+      end: { x: x + noticeWidth / 2, y: y + noticeHeight - 38 },
+      thickness: 0.4,
+      color: COLORS.border,
+    });
+    drawWrappedText(page, leftText, x + 12, y + noticeHeight - 45, columnWidth, this.fonts, {
+      size: 5.2,
+      color: COLORS.slate,
+      lineHeight: 5.8,
+      maxLines: 7,
+    });
+    drawWrappedText(page, rightText, x + noticeWidth / 2 + columnGap / 2, y + noticeHeight - 45, columnWidth, this.fonts, {
+      size: 5.2,
+      color: COLORS.slate,
+      lineHeight: 5.8,
+      maxLines: 7,
+    });
   }
 
 }
@@ -631,7 +689,17 @@ export async function processCertificarPdf(pdfBytes: Uint8Array, options: Proces
   const headerTemplateBytes = await loadHeaderTemplateBytes();
   const detailIconsBytes = await loadDetailIconsBytes();
   const whatsappIconBytes = await loadWhatsappIconBytes();
-  const renderer = new CertificarRenderer(doc, fonts, logoBytes, headerTemplateBytes, detailIconsBytes, whatsappIconBytes, sourceDoc, report);
+  const renderer = new CertificarRenderer(
+    doc,
+    fonts,
+    logoBytes,
+    headerTemplateBytes,
+    detailIconsBytes,
+    whatsappIconBytes,
+    sourceDoc,
+    report,
+    { addContactNumber: options.addContactNumber ?? true },
+  );
 
   await renderer.render();
 
