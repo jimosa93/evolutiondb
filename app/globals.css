@@ -18,6 +18,14 @@ body {
     #0c1222 100%
   );
   color: #e2e8f0;
+  font-family:
+    "DM Sans",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 
 button:enabled {

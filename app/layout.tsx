@@ -1,12 +1,6 @@
 import type { Metadata } from "next";
-import { DM_Sans } from "next/font/google";
 
 import "./globals.css";
-
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-dm-sans",
-});
 
 export const metadata: Metadata = {
   title: "Usuarios · Evolution DB",
@@ -19,10 +13,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es" className={dmSans.variable}>
-      <body className="font-[family-name:var(--font-dm-sans)] antialiased">
-        {children}
-      </body>
+    <html lang="es">
+      <body>{children}</body>
     </html>
   );
 }
