@@ -43,7 +43,6 @@ export async function POST(request: NextRequest) {
   try {
     const inputBytes = new Uint8Array(await file.arrayBuffer());
     const outputBytes = await processAutocheckPdf(inputBytes, file.name, {
-      includeModel2020Notice: formData.get("includeModel2020Notice") === "true",
       includeContactNumbers: formData.get("includeContactNumbers") === "true",
     });
     const outputName = getAutocheckPdfOutputFileName(file.name);

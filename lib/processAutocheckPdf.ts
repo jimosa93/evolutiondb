@@ -15,10 +15,14 @@ const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
 const PAGE_MARGIN = 28;
 const CARD_PADDING = 12;
+const HEADER_HEIGHT = 96;
 const FOOTER_HEIGHT = 28;
 
 const COLORS = {
   blue: rgb(0.07, 0.32, 0.68),
+  darkBlue: rgb(0.03, 0.13, 0.34),
+  midBlue: rgb(0.12, 0.31, 0.68),
+  sky: rgb(0.14, 0.39, 0.86),
   lightBlue: rgb(0.91, 0.95, 1),
   slate: rgb(0.12, 0.16, 0.22),
   muted: rgb(0.42, 0.48, 0.57),
@@ -28,6 +32,7 @@ const COLORS = {
   yellow: rgb(0.95, 0.66, 0.12),
   red: rgb(0.83, 0.18, 0.18),
   white: rgb(1, 1, 1),
+  black: rgb(0, 0, 0),
 };
 
 const LIABILITY_NOTICE_TITLE = "Aviso de Responsabilidad - AutoCheck";
@@ -195,6 +200,19 @@ type InsuranceReport = {
   note: string;
 };
 
+type OfficialTransitReport = {
+  present: boolean;
+  source: string;
+  status: string;
+  pledge: string;
+  liens: string;
+  agency: string;
+  soatStatus: string;
+  soatExpires: string;
+  soatInsurer: string;
+  note: string;
+};
+
 type VehicleReport = {
   plate: string;
   queryDate: string;
@@ -204,6 +222,7 @@ type VehicleReport = {
     brand: string;
     reference: string;
     modelYear: string;
+    color: string;
     className: string;
     service: string;
     manufacturer: string;
@@ -220,6 +239,7 @@ type VehicleReport = {
   };
   valuation: KeyValue[];
   valuationDetail: ValuationReport;
+  officialTransit: OfficialTransitReport;
   insurance: KeyValue[];
   insuranceDetail: InsuranceReport;
   riskCategories: RiskCategory[];
@@ -250,12 +270,14 @@ type TextStyle = {
 };
 
 type AutocheckPdfOptions = {
-  includeModel2020Notice?: boolean;
   includeContactNumbers?: boolean;
 };
 
 function normalizeText(text: string) {
-  return text.replace(/\s+/g, " ").trim();
+  return text
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\bPúBLICO\b/g, "PÚBLICO");
 }
 
 function toWinAnsiSafeText(text: string) {
@@ -509,6 +531,7 @@ function parseVehicle(section: string[]) {
       findLabelValue(section, "LÍNEA / REFERENCIA", labels.filter((label) => label !== "LÍNEA / REFERENCIA")),
     );
     const modelYear = findLabelValue(section, "MODELO (AÑO)", labels.filter((label) => label !== "MODELO (AÑO)"));
+    const color = findLabelValue(section, "COLOR", labels.filter((label) => label !== "COLOR"));
     const className = findLabelValue(section, "CLASE", labels.filter((label) => label !== "CLASE"));
     const serviceIndex = findTokenIndex(section, "SERVICIO");
     const service = serviceIndex >= 0 ? section[serviceIndex + 1] ?? "" : "";
@@ -521,6 +544,7 @@ function parseVehicle(section: string[]) {
       brand: brand || "No disponible",
       reference: reference || "No disponible",
       modelYear: modelYear || "No disponible",
+      color: color || "No disponible",
       className: className || "No disponible",
       service,
       manufacturer: afterService[0] ?? "No disponible",
@@ -552,6 +576,7 @@ function parseVehicle(section: string[]) {
     brand,
     reference,
     modelYear,
+    color: "No disponible",
     className,
     service,
     manufacturer,
@@ -587,6 +612,69 @@ function parseTechnicalSpecs(section: string[]) {
     const [label, value] = entry.split("\u0000");
     return { label, value };
   });
+}
+
+function normalizeTransitValue(value: string) {
+  return normalizeText(value)
+    .replace(/\bSI\b/g, "SÍ");
+}
+
+function joinTransitDate(tokens: string[]) {
+  const compact = tokens.join("").replace(/\s+/g, "");
+  return compact || "No disponible";
+}
+
+function readTransitValue(section: string[], label: string, endLabels: string[]) {
+  const value = findLabelValue(section, label, endLabels);
+  return normalizeTransitValue(value || "No disponible");
+}
+
+function parseOfficialTransit(section: string[]): OfficialTransitReport {
+  if (section.length === 0) {
+    return {
+      present: false,
+      source: "",
+      status: "",
+      pledge: "",
+      liens: "",
+      agency: "",
+      soatStatus: "",
+      soatExpires: "",
+      soatInsurer: "",
+      note: "",
+    };
+  }
+
+  const noteIndex = section.findIndex((value) => value.startsWith("Datos oficiales de tránsito"));
+  const statusToken = section.find((value) => value.startsWith("Estado:"));
+  const source = section.includes("Fuente oficial") ? "Fuente oficial" : "Fuente no disponible";
+  const pledge = readTransitValue(section, "Prenda registrada", ["Gravámenes"]);
+  const liens = readTransitValue(section, "Gravámenes", ["ORGANISMO DE TRÁNSITO"]);
+  const agency = readTransitValue(section, "ORGANISMO DE TRÁNSITO", ["SOAT (OFICIAL)"]);
+  const soatStatus = readTransitValue(section, "ESTADO", ["VENCE"]);
+  const expiresIndex = findTokenIndex(section, "VENCE");
+  const insurerIndex = findTokenIndex(section, "ASEGURADORA");
+  const soatExpires = expiresIndex >= 0
+    ? joinTransitDate(section.slice(expiresIndex + 1, insurerIndex >= 0 ? insurerIndex : noteIndex >= 0 ? noteIndex : undefined))
+    : "No disponible";
+  const soatInsurer = insurerIndex >= 0
+    ? normalizeTransitValue(section.slice(insurerIndex + 1, noteIndex >= 0 ? noteIndex : undefined).join(" "))
+    : "No disponible";
+
+  return {
+    present: true,
+    source,
+    status: normalizeTransitValue(statusToken?.replace("Estado:", "").trim() || "No disponible"),
+    pledge,
+    liens,
+    agency,
+    soatStatus,
+    soatExpires,
+    soatInsurer: soatInsurer || "No disponible",
+    note: noteIndex >= 0
+      ? section[noteIndex]
+      : "Datos oficiales de tránsito. Verifica en el organismo correspondiente antes de cualquier trámite.",
+  };
 }
 
 function parseRiskFactors(section: string[]) {
@@ -864,7 +952,7 @@ function parseInsurance(section: string[]) {
 }
 
 function isClaimStatusToken(value: string) {
-  return /^(OTROS|PPD|PTD|PTH|RC|RC BIENES|RC PERSONAS)\b/i.test(value);
+  return /^(OTROS|[A-Z]{2,4}(?:\s+[A-ZÁÉÍÓÚÑ]{2,12})?)\s+[—-]\s+(AVISADO|PAGADO|CERRADO|CERRADO-TERMINADO|TERMINADO)\b/i.test(normalizeText(value));
 }
 
 function parseClaimSubDetails(block: string[]) {
@@ -1000,6 +1088,7 @@ function parseReport(
   sourceLayout: VehicleReport["sourceLayout"],
 ): VehicleReport {
   const joined = tokens.join(" ");
+  const officialTransitSection = sliceBetween(tokens, "Registro Oficial de Tránsito", ["Identificación del Vehículo"]);
   const vehicleSection = sliceBetween(tokens, "Identificación del Vehículo", ["Ficha Técnica"]);
   const technicalSection = sliceBetween(tokens, "Ficha Técnica", ["Score de Riesgo Vehicular"]);
   const riskSection = sliceBetween(tokens, "Score de Riesgo Vehicular", ["Valoración FASECOLDA"]);
@@ -1033,7 +1122,7 @@ function parseReport(
       joined,
       /\d{2}\/\d{2}\/\d{4},\s*\d{2}\s*:\s*\d{2}\s*[ap]\.m\./i,
     ).replace(/\s+:\s+/, ":"),
-    queryType: "Histórica Reciente",
+    queryType: "AUTOCHECK RECIENTE",
     sourceName,
     vehicle: parseVehicle(vehicleSection),
     technicalSpecs: parseTechnicalSpecs(technicalSection),
@@ -1045,6 +1134,7 @@ function parseReport(
     },
     valuation,
     valuationDetail: parseValuationReport(valuation),
+    officialTransit: parseOfficialTransit(officialTransitSection),
     insurance: insuranceDetail.summary,
     insuranceDetail,
     riskCategories: parseRiskCategories(riskCategoriesSection),
@@ -1093,6 +1183,159 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number) {
   }
 
   return lines.length > 0 ? lines : [""];
+}
+
+function fitText(font: PDFFont, text: string, maxWidth: number, initialSize: number, minSize = 4) {
+  let size = initialSize;
+  while (size > minSize && font.widthOfTextAtSize(toWinAnsiSafeText(text), size) > maxWidth) {
+    size -= 0.25;
+  }
+  return size;
+}
+
+function truncateText(font: PDFFont, text: string, size: number, maxWidth: number) {
+  const safeText = toWinAnsiSafeText(text);
+  if (font.widthOfTextAtSize(safeText, size) <= maxWidth) {
+    return safeText;
+  }
+
+  let truncated = safeText;
+  while (truncated.length > 1 && font.widthOfTextAtSize(`${truncated}...`, size) > maxWidth) {
+    truncated = truncated.slice(0, -1);
+  }
+  return `${truncated.trimEnd()}...`;
+}
+
+function cleanHeaderValue(value: string) {
+  const normalized = normalizeText(value);
+  if (!normalized || /^(no disponible|sin información)/i.test(normalized)) {
+    return "No disponible";
+  }
+  return normalized;
+}
+
+function isMeaningfulValue(value: string) {
+  const normalized = normalizeText(value);
+  return Boolean(normalized) && !/^(no disponible|sin información|undefined|null|-|n\/a)$/i.test(normalized);
+}
+
+function formatAutocheckReportNumber(plate: string, queryDate: string) {
+  const match = queryDate.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  const cleanPlate = normalizeText(plate).replace(/[^A-Z0-9]/gi, "").toUpperCase() || "SINPLACA";
+  if (!match) {
+    return `AR-${cleanPlate}-SIN-FECHA`;
+  }
+  return `AR-${cleanPlate}-${match[1]}${match[2]}${match[3]}`;
+}
+
+function formatAutocheckQueryType(queryType: string) {
+  if (/reciente/i.test(queryType)) {
+    return "AUTOCHECK RECIENTE";
+  }
+  return `AUTOCHECK ${normalizeText(queryType).toUpperCase()}`;
+}
+
+function roundedRectPath(width: number, height: number, radius: number) {
+  return [
+    `M ${radius} 0`,
+    `L ${width - radius} 0`,
+    `Q ${width} 0 ${width} ${radius}`,
+    `L ${width} ${height - radius}`,
+    `Q ${width} ${height} ${width - radius} ${height}`,
+    `L ${radius} ${height}`,
+    `Q 0 ${height} 0 ${height - radius}`,
+    `L 0 ${radius}`,
+    `Q 0 0 ${radius} 0`,
+    "Z",
+  ].join(" ");
+}
+
+function drawRoundedRect(page: PDFPage, x: number, y: number, width: number, height: number, radius: number, options: {
+  color?: ReturnType<typeof rgb>;
+  borderColor?: ReturnType<typeof rgb>;
+  borderWidth?: number;
+}) {
+  page.drawSvgPath(roundedRectPath(width, height, radius), {
+    x,
+    y: y + height,
+    color: options.color,
+    borderColor: options.borderColor,
+    borderWidth: options.borderWidth,
+  });
+}
+
+function drawCenteredText(page: PDFPage, text: string, centerX: number, y: number, maxWidth: number, fonts: Fonts, options: {
+  size?: number;
+  bold?: boolean;
+  color?: ReturnType<typeof rgb>;
+} = {}) {
+  const font = options.bold ? fonts.bold : fonts.regular;
+  const size = fitText(font, text, maxWidth, options.size ?? 9);
+  const displayText = truncateText(font, text, size, maxWidth);
+  page.drawText(displayText, {
+    x: centerX - font.widthOfTextAtSize(displayText, size) / 2,
+    y,
+    size,
+    font,
+    color: options.color ?? COLORS.slate,
+  });
+}
+
+function drawFittedText(page: PDFPage, text: string, x: number, y: number, maxWidth: number, fonts: Fonts, options: {
+  size?: number;
+  bold?: boolean;
+  color?: ReturnType<typeof rgb>;
+} = {}) {
+  const font = options.bold ? fonts.bold : fonts.regular;
+  const size = fitText(font, text, maxWidth, options.size ?? 9);
+  const displayText = truncateText(font, text, size, maxWidth);
+  page.drawText(displayText, {
+    x,
+    y,
+    size,
+    font,
+    color: options.color ?? COLORS.slate,
+  });
+}
+
+function drawPlate(page: PDFPage, plate: string, x: number, y: number, width: number, height: number, fonts: Fonts) {
+  drawRoundedRect(page, x, y, width, height, 7, {
+    color: rgb(0.94, 0.72, 0.18),
+    borderColor: rgb(0.82, 0.61, 0.12),
+    borderWidth: 1,
+  });
+  drawRoundedRect(page, x + 5, y + 6, width - 10, height - 12, 4, {
+    borderColor: rgb(0.13, 0.1, 0.04),
+    borderWidth: 1,
+  });
+  const plateSize = Math.min(22, height * 0.42);
+  const countrySize = Math.min(8.2, height * 0.16);
+  drawCenteredText(page, plate || "-", x + width / 2, y + height * 0.49, width - 24, fonts, {
+    bold: true,
+    size: plateSize,
+    color: COLORS.black,
+  });
+  drawCenteredText(page, "COLOMBIA", x + width / 2, y + height * 0.29, width - 26, fonts, {
+    bold: true,
+    size: countrySize,
+    color: rgb(0.2, 0.15, 0.05),
+  });
+  page.drawLine({ start: { x: x + 12, y: y + 11 }, end: { x: x + 22, y: y + 11 }, thickness: 2, color: COLORS.black });
+  page.drawLine({ start: { x: x + width - 22, y: y + 11 }, end: { x: x + width - 12, y: y + 11 }, thickness: 2, color: COLORS.black });
+}
+
+function drawCalendarIcon(page: PDFPage, x: number, y: number, color: ReturnType<typeof rgb>) {
+  page.drawRectangle({ x, y, width: 18, height: 18, borderColor: color, borderWidth: 1.1 });
+  page.drawLine({ start: { x, y: y + 13 }, end: { x: x + 18, y: y + 13 }, thickness: 1.1, color });
+  page.drawLine({ start: { x: x + 5, y: y + 20 }, end: { x: x + 5, y: y + 15 }, thickness: 1.1, color });
+  page.drawLine({ start: { x: x + 13, y: y + 20 }, end: { x: x + 13, y: y + 15 }, thickness: 1.1, color });
+}
+
+function drawDocumentIcon(page: PDFPage, x: number, y: number, color: ReturnType<typeof rgb>) {
+  page.drawRectangle({ x, y, width: 18, height: 24, borderColor: color, borderWidth: 1.1 });
+  page.drawLine({ start: { x: x + 4, y: y + 17 }, end: { x: x + 14, y: y + 17 }, thickness: 0.9, color });
+  page.drawLine({ start: { x: x + 4, y: y + 12 }, end: { x: x + 14, y: y + 12 }, thickness: 0.9, color });
+  page.drawLine({ start: { x: x + 4, y: y + 7 }, end: { x: x + 11, y: y + 7 }, thickness: 0.9, color });
 }
 
 function multiplyPdfMatrix(left: number[], right: number[]) {
@@ -1171,18 +1414,21 @@ class ReportRenderer {
   private page: PDFPage;
   private y: number;
   private readonly fonts: Fonts;
-  private readonly logoBytes: Uint8Array;
+  private readonly headerTemplateBytes: Uint8Array;
+  private readonly detailIconsBytes: Uint8Array[];
   private vehiclePreview?: PDFEmbeddedPage;
 
   constructor(
     private readonly doc: PDFDocument,
     fonts: Fonts,
-    logoBytes: Uint8Array,
+    headerTemplateBytes: Uint8Array,
+    detailIconsBytes: Uint8Array[],
     private readonly providerPdfBytes: Uint8Array,
     private readonly options: AutocheckPdfOptions = {},
   ) {
     this.fonts = fonts;
-    this.logoBytes = logoBytes;
+    this.headerTemplateBytes = headerTemplateBytes;
+    this.detailIconsBytes = detailIconsBytes;
     this.page = this.createPage();
     this.y = A4_HEIGHT - PAGE_MARGIN;
   }
@@ -1194,6 +1440,7 @@ class ReportRenderer {
     this.drawVehicleAndScore(report);
     this.drawSectionTitle("Ficha técnica", 42);
     this.drawKeyValueGrid(report.technicalSpecs, 4);
+    this.drawOfficialTransit(report.officialTransit);
     this.drawSectionTitle("Valoración Fasecolda", 112);
     this.drawValuation(report.valuationDetail);
     this.drawSectionTitle("Seguro todo riesgo", 70);
@@ -1234,46 +1481,207 @@ class ReportRenderer {
   }
 
   private async drawHeader(report: VehicleReport) {
-    const logo = await this.doc.embedPng(this.logoBytes);
-    const logoWidth = 170;
-    const logoHeight = (logo.height / logo.width) * logoWidth;
+    const headerTemplate = await this.doc.embedPng(this.headerTemplateBytes);
+    const detailIcons = await Promise.all(this.detailIconsBytes.map((iconBytes) => this.doc.embedPng(iconBytes)));
+    const y = A4_HEIGHT - HEADER_HEIGHT;
+    const rightPanelX = A4_WIDTH - 140;
+    const panelTextX = A4_WIDTH - 106;
 
-    this.page.drawImage(logo, {
-      x: PAGE_MARGIN,
-      y: this.y - logoHeight,
-      width: logoWidth,
-      height: logoHeight,
+    this.page.drawImage(headerTemplate, { x: 0, y, width: A4_WIDTH, height: HEADER_HEIGHT });
+    this.page.drawRectangle({ x: 390, y, width: rightPanelX - 390, height: HEADER_HEIGHT, color: COLORS.white });
+    this.page.drawRectangle({ x: 212, y: y + 2, width: rightPanelX - 212, height: 65, color: COLORS.white });
+
+    drawPlate(this.page, report.plate, 216, y + 9, 96, 50, this.fonts);
+
+    const fuel = report.technicalSpecs.find((entry) => /^combustible$/i.test(entry.label))?.value || "No disponible";
+    const details = [
+      ["MARCA:", cleanHeaderValue(report.vehicle.brand)],
+      ["MODELO:", cleanHeaderValue(report.vehicle.reference)],
+      ["AÑO:", cleanHeaderValue(report.vehicle.modelYear)],
+      ["TIPO:", cleanHeaderValue(report.vehicle.className)],
+      ["COLOR:", cleanHeaderValue(report.vehicle.color)],
+      ["COMBUSTIBLE:", cleanHeaderValue(fuel)],
+    ];
+    const detailsX = 342;
+    const detailValueX = 384;
+    const detailValueWidth = rightPanelX - detailValueX - 8;
+    details.forEach(([label, value], index) => {
+      const rowY = y + 59 - index * 9.2;
+      const icon = detailIcons[index];
+      const iconHeight = 7.8;
+      this.page.drawImage(icon, {
+        x: 330,
+        y: rowY - 1,
+        width: (icon.width / icon.height) * iconHeight,
+        height: iconHeight,
+      });
+      drawFittedText(this.page, label, detailsX, rowY, detailValueX - detailsX - 4, this.fonts, {
+        bold: true,
+        size: 4.35,
+        color: COLORS.blue,
+      });
+      drawFittedText(this.page, value || "No disponible", detailValueX, rowY, detailValueWidth, this.fonts, {
+        size: 4.65,
+        color: COLORS.slate,
+      });
     });
 
-    const metaX = 330;
-    this.drawLabelValue("Fecha de consulta", report.queryDate, metaX, this.y - 5, 110);
-    this.drawLabelValue("Tipo de consulta", report.queryType, metaX + 125, this.y - 5, 110);
+    this.page.drawRectangle({ x: rightPanelX, y, width: A4_WIDTH - rightPanelX, height: HEADER_HEIGHT, color: COLORS.darkBlue });
+    this.page.drawRectangle({ x: rightPanelX, y: A4_HEIGHT - 8, width: A4_WIDTH - rightPanelX, height: 5, color: COLORS.midBlue });
+    drawDocumentIcon(this.page, A4_WIDTH - 128, y + 66, COLORS.white);
+    drawFittedText(this.page, "INFORME No.", panelTextX, y + 76, 88, this.fonts, { bold: true, size: 6.2, color: COLORS.white });
+    drawFittedText(this.page, formatAutocheckReportNumber(report.plate, report.queryDate), panelTextX, y + 61, 92, this.fonts, { size: 8.3, color: COLORS.white });
+    this.page.drawLine({ start: { x: A4_WIDTH - 131, y: y + 52 }, end: { x: A4_WIDTH - 14, y: y + 52 }, thickness: 0.5, color: rgb(0.35, 0.56, 0.9) });
+    drawCalendarIcon(this.page, A4_WIDTH - 126, y + 29, COLORS.white);
+    drawFittedText(this.page, "FECHA DE CONSULTA:", panelTextX, y + 38, 92, this.fonts, { bold: true, size: 5.1, color: COLORS.white });
+    drawFittedText(this.page, report.queryDate || "No disponible", panelTextX, y + 28, 92, this.fonts, { size: 5.4, color: COLORS.white });
 
-    if (this.options.includeContactNumbers) {
-      const contactY = this.y - 36;
-      const contactPrefix = "Contacto:";
-      this.drawText(`${contactPrefix} 310 5523591`, metaX, contactY, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.slate,
-      });
-      this.drawText("312 4095620", metaX + this.fonts.bold.widthOfTextAtSize(`${contactPrefix} `, 7), contactY - 8, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.slate,
-      });
+    drawFittedText(this.page, "TIPO DE CONSULTA:", panelTextX, y + 11.8, 92, this.fonts, { bold: true, size: 4.6, color: COLORS.white });
+    this.page.drawRectangle({ x: panelTextX, y: y + 2, width: 84, height: 8.5, color: COLORS.sky });
+    drawFittedText(this.page, formatAutocheckQueryType(report.queryType), panelTextX + 5, y + 4.8, 74, this.fonts, { bold: true, size: 4.1, color: COLORS.white });
+
+    this.y = y - 14;
+  }
+
+  private drawOfficialTransit(transit: OfficialTransitReport) {
+    if (!transit.present) {
+      return;
     }
 
-    if (this.options.includeModel2020Notice) {
-      this.drawWrappedText("Siniestros y reclamaciones 2020 en adelante.", metaX + 125, this.y - 36, 112, {
-        font: this.fonts.bold,
-        size: 7,
-        color: COLORS.slate,
-        lineHeight: 8,
-      });
-    }
+    const width = A4_WIDTH - PAGE_MARGIN * 2;
+    const height = 230;
+    this.ensureSpace(height + 14);
+    const topY = this.y;
 
-    this.y -= this.options.includeContactNumbers || this.options.includeModel2020Notice ? 90 : 76;
+    drawRoundedRect(this.page, PAGE_MARGIN, topY - height, width, height, 8, {
+      color: rgb(0.94, 0.97, 1),
+      borderColor: rgb(0.78, 0.88, 1),
+      borderWidth: 0.8,
+    });
+    this.drawTransitShield(PAGE_MARGIN + 13, topY - 37, COLORS.muted);
+    this.drawText("Registro Oficial de Tránsito", PAGE_MARGIN + 32, topY - 24, {
+      font: this.fonts.bold,
+      size: 12,
+      color: COLORS.slate,
+    });
+    this.page.drawLine({
+      start: { x: PAGE_MARGIN + 13, y: topY - 35 },
+      end: { x: PAGE_MARGIN + width - 13, y: topY - 35 },
+      thickness: 1.2,
+      color: COLORS.sky,
+    });
+
+    this.drawTransitBadge(transit.source, PAGE_MARGIN + 14, topY - 57, COLORS.blue, COLORS.lightBlue);
+    this.drawTransitBadge(`Estado: ${transit.status}`, PAGE_MARGIN + 78, topY - 57, COLORS.green, rgb(0.9, 1, 0.95));
+
+    const gap = 7;
+    const halfWidth = (width - 28 - gap) / 2;
+    const summaryY = topY - 70;
+    this.drawTransitMetricCard("Prenda registrada", transit.pledge, PAGE_MARGIN + 14, summaryY, halfWidth, 30);
+    this.drawTransitMetricCard("Gravámenes", transit.liens, PAGE_MARGIN + 14 + halfWidth + gap, summaryY, halfWidth, 30);
+
+    this.drawTransitInfoCard("Organismo de tránsito", transit.agency, PAGE_MARGIN + 14, topY - 142, width - 28, 34, COLORS.sky);
+
+    this.drawSmallCaps("SOAT (OFICIAL)", PAGE_MARGIN + 14, topY - 157, 7.2, COLORS.muted);
+    const soatCardWidth = (width - 28 - gap * 2) / 3;
+    const soatY = topY - 165;
+    const soatCardHeight = Math.max(
+      37,
+      24 + wrapText(transit.soatStatus || "No disponible", this.fonts.bold, 9, soatCardWidth - 20).length * 10,
+      24 + wrapText(transit.soatExpires || "No disponible", this.fonts.bold, 9, soatCardWidth - 20).length * 10,
+      24 + wrapText(transit.soatInsurer || "No disponible", this.fonts.bold, 9, soatCardWidth - 20).length * 10,
+    );
+    this.drawTransitInfoCard("Estado", transit.soatStatus, PAGE_MARGIN + 14, soatY - soatCardHeight, soatCardWidth, soatCardHeight, this.transitAccent(transit.soatStatus, true));
+    this.drawTransitInfoCard("Vence", transit.soatExpires, PAGE_MARGIN + 14 + soatCardWidth + gap, soatY - soatCardHeight, soatCardWidth, soatCardHeight, COLORS.muted);
+    this.drawTransitInfoCard("Aseguradora", transit.soatInsurer, PAGE_MARGIN + 14 + (soatCardWidth + gap) * 2, soatY - soatCardHeight, soatCardWidth, soatCardHeight, COLORS.muted);
+
+    this.drawWrappedText(transit.note, PAGE_MARGIN + 14, topY - height + 9, width - 28, {
+      font: this.fonts.regular,
+      size: 6.8,
+      color: COLORS.muted,
+      lineHeight: 8,
+    });
+
+    this.y -= height + 14;
+  }
+
+  private transitAccent(value: string, positiveWhenNo = false) {
+    if (/no vigente|vencid|sí|si\b/i.test(value)) {
+      return positiveWhenNo ? COLORS.red : COLORS.yellow;
+    }
+    if (/activo|vigente|no\b/i.test(value)) {
+      return COLORS.green;
+    }
+    return COLORS.blue;
+  }
+
+  private drawTransitShield(x: number, y: number, color: ReturnType<typeof rgb>) {
+    this.page.drawSvgPath("M 12 2 L 20 6 L 20 12 C 20 16 17 19 12 21 C 7 19 4 16 4 12 L 4 6 Z M 8.5 11.8 L 11 14.2 L 16 9", {
+      x,
+      y: y + 24,
+      scale: 0.62,
+      borderColor: color,
+      borderWidth: 1.5,
+    });
+  }
+
+  private drawTransitBadge(text: string, x: number, y: number, color: ReturnType<typeof rgb>, fill: ReturnType<typeof rgb>) {
+    const safeText = toWinAnsiSafeText(text);
+    const textWidth = this.fonts.bold.widthOfTextAtSize(safeText, 7);
+    const width = Math.max(56, textWidth + 17);
+    drawRoundedRect(this.page, x, y, width, 16, 8, {
+      color: fill,
+      borderColor: color,
+      borderWidth: 0.7,
+    });
+    this.drawText(safeText, x + 8, y + 5, {
+      font: this.fonts.bold,
+      size: 7,
+      color,
+    });
+  }
+
+  private drawTransitMetricCard(label: string, value: string, x: number, y: number, width: number, height: number) {
+    drawRoundedRect(this.page, x, y - height, width, height, 8, {
+      color: COLORS.white,
+      borderColor: COLORS.border,
+      borderWidth: 0.8,
+    });
+    this.drawText(label, x + 9, y - 18, {
+      font: this.fonts.bold,
+      size: 8,
+      color: COLORS.muted,
+    });
+    const accent = this.transitAccent(value);
+    const pillText = normalizeTransitValue(value || "No disponible");
+    const pillWidth = Math.max(30, this.fonts.bold.widthOfTextAtSize(pillText, 7) + 18);
+    drawRoundedRect(this.page, x + width - pillWidth - 9, y - 23, pillWidth, 16, 8, {
+      color: /no\b/i.test(pillText) ? rgb(0.9, 1, 0.95) : rgb(1, 0.96, 0.86),
+      borderColor: accent,
+      borderWidth: 0.7,
+    });
+    this.page.drawCircle({ x: x + width - pillWidth + 1, y: y - 15, size: 2, color: accent });
+    this.drawText(pillText, x + width - pillWidth + 7, y - 18, {
+      font: this.fonts.bold,
+      size: 7,
+      color: accent,
+    });
+  }
+
+  private drawTransitInfoCard(label: string, value: string, x: number, y: number, width: number, height: number, accent: ReturnType<typeof rgb>) {
+    drawRoundedRect(this.page, x, y, width, height, 7, {
+      color: COLORS.white,
+      borderColor: COLORS.border,
+      borderWidth: 0.8,
+    });
+    this.page.drawRectangle({ x, y, width: 3, height, color: accent });
+    this.drawSmallCaps(label, x + 10, y + height - 14, 7, COLORS.muted);
+    this.drawWrappedText(value || "No disponible", x + 10, y + height - 27, width - 20, {
+      font: this.fonts.bold,
+      size: 9,
+      color: COLORS.slate,
+      lineHeight: 10,
+    });
   }
 
   private drawVehicleAndScore(report: VehicleReport) {
@@ -1297,7 +1705,7 @@ class ReportRenderer {
     this.drawSmallCaps("PLACA", detailX, topY - 24);
     this.drawText(report.plate, detailX, topY - 57, {
       font: this.fonts.bold,
-      size: 30,
+      size: 24,
       color: COLORS.slate,
     });
     this.drawText(report.vehicle.brand, detailX, topY - 80, {
@@ -1312,6 +1720,7 @@ class ReportRenderer {
       lineHeight: 13,
     });
 
+    const cylinder = report.technicalSpecs.find((entry) => /^cilindraje$/i.test(entry.label))?.value ?? "";
     const summary: KeyValue[] = [
       { label: "Modelo", value: report.vehicle.modelYear },
       { label: "Clase", value: report.vehicle.className },
@@ -1320,7 +1729,9 @@ class ReportRenderer {
       { label: "País de origen", value: report.vehicle.originCountry },
       { label: "Guía de valores", value: report.vehicle.guide || "No disponible" },
       { label: "Código referencia", value: report.vehicle.code || "No disponible" },
-    ];
+      isMeaningfulValue(report.vehicle.color) ? { label: "Color", value: report.vehicle.color } : null,
+      isMeaningfulValue(cylinder) ? { label: "Cilindraje", value: cylinder } : null,
+    ].filter((entry): entry is KeyValue => Boolean(entry));
 
     this.drawInlinePairs(summary, PAGE_MARGIN + CARD_PADDING, topY - 130, leftWidth - 24, 3);
 
@@ -1478,7 +1889,7 @@ class ReportRenderer {
       }
 
       const { width, height } = firstPage.getSize();
-      const left = Math.min(18, width * 0.03);
+      const left = Math.min(46, width * 0.075);
       const cropHeight = 130;
       const cropWidth = 205;
       const headingY = report.sourceLayout.vehicleHeadingY;
@@ -2472,18 +2883,32 @@ class ReportRenderer {
     this.drawText(
       "Información obtenida de fuentes oficiales y bases de datos especializadas. Uso exclusivo para evaluación y respaldo profesional.",
       PAGE_MARGIN,
-      11,
+      this.options.includeContactNumbers ? 15 : 11,
       {
         size: 7,
         color: COLORS.white,
       },
     );
+    if (this.options.includeContactNumbers) {
+      this.drawText("Contacto: 310 5523591 · 312 4095620", PAGE_MARGIN, 5.5, {
+        font: this.fonts.bold,
+        size: 6.4,
+        color: COLORS.white,
+      });
+    }
   }
 }
 
-async function loadLogoBytes() {
-  const logoPath = path.join(process.cwd(), "public", "autocheck-logo.png");
-  return fs.readFile(logoPath);
+async function loadHeaderTemplateBytes() {
+  return fs.readFile(path.join(process.cwd(), "public", "certificar-header-template.png"));
+}
+
+async function loadDetailIconsBytes() {
+  return Promise.all(
+    [1, 2, 3, 4, 5, 6].map((index) =>
+      fs.readFile(path.join(process.cwd(), "public", `certificar-detail-icon-${index}.png`)),
+    ),
+  );
 }
 
 export async function extractAutocheckReport(pdfBytes: Uint8Array, sourceName = "proveedor.pdf") {
@@ -2513,8 +2938,9 @@ export async function processAutocheckPdf(
     regular: await pdfDocument.embedFont(StandardFonts.Helvetica),
     bold: await pdfDocument.embedFont(StandardFonts.HelveticaBold),
   };
-  const logoBytes = await loadLogoBytes();
-  const renderer = new ReportRenderer(pdfDocument, fonts, logoBytes, pdfBytes, options);
+  const headerTemplateBytes = await loadHeaderTemplateBytes();
+  const detailIconsBytes = await loadDetailIconsBytes();
+  const renderer = new ReportRenderer(pdfDocument, fonts, headerTemplateBytes, detailIconsBytes, pdfBytes, options);
 
   await renderer.render(report);
 
