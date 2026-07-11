@@ -952,7 +952,7 @@ function parseInsurance(section: string[]) {
 }
 
 function isClaimStatusToken(value: string) {
-  return /^(OTROS|[A-Z]{2,4}(?:\s+[A-ZÁÉÍÓÚÑ]{2,12})?)\s+[—-]\s+(AVISADO|PAGADO|CERRADO|CERRADO-TERMINADO|TERMINADO)\b/i.test(normalizeText(value));
+  return /^(OTROS|[A-Z]{2,4}(?:\s+[A-ZÁÉÍÓÚÑ]{2,12})?)\s+[—-]\s+(AVISADO|PAGADO|CERRADO-TERMINADO|CERRADO|TERMINADO|DESISTIDO)\b/i.test(normalizeText(value));
 }
 
 function parseClaimSubDetails(block: string[]) {
