@@ -88,7 +88,7 @@ export function AvailabilitySwitch() {
         aria-label="Cambiar disponibilidad en Typebot"
         disabled={disabled}
         onClick={toggleAvailability}
-        className={`flex min-h-[42px] items-center gap-2.5 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-70 ${
+        className={`flex min-h-[42px] items-center gap-3 whitespace-nowrap rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-70 ${
           available
             ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-200"
             : "border-white/15 bg-slate-900/70 text-slate-300"
@@ -96,7 +96,7 @@ export function AvailabilitySwitch() {
       >
         <span
           aria-hidden="true"
-          className={`relative h-6 w-11 rounded-full transition ${
+          className={`relative h-6 w-11 shrink-0 rounded-full transition ${
             available ? "bg-emerald-500" : "bg-slate-600"
           }`}
         >
