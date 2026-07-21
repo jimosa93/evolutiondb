@@ -1,4 +1,5 @@
 import { logoutAction } from "@/app/actions/auth-actions";
+import { AvailabilitySwitch } from "@/app/components/AvailabilitySwitch";
 import { DashboardNav } from "@/app/components/DashboardNav";
 
 export default function DashboardLayout({
@@ -16,14 +17,17 @@ export default function DashboardLayout({
             </p>
             <DashboardNav />
           </div>
-          <form action={logoutAction} className="flex shrink-0 justify-center sm:justify-end sm:pt-1">
-            <button
-              type="submit"
-              className="rounded-xl border border-white/15 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/10"
-            >
-              Cerrar sesión
-            </button>
-          </form>
+          <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 sm:justify-end sm:pt-1">
+            <AvailabilitySwitch />
+            <form action={logoutAction}>
+              <button
+                type="submit"
+                className="rounded-xl border border-white/15 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/10"
+              >
+                Cerrar sesión
+              </button>
+            </form>
+          </div>
         </div>
       </header>
       <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">{children}</div>

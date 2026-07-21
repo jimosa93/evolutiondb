@@ -5,6 +5,13 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth-session";
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Typebot only needs to read this non-sensitive operational state.
+  // All mutations and the rest of the API remain protected by the admin session.
+  if (pathname === "/api/availability" && request.method === "GET") {
+    return NextResponse.next();
+  }
+
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   const authenticated = await verifySessionToken(token);
 

@@ -7,6 +7,14 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model AvailabilitySetting {
+  key       String   @id
+  available Boolean  @default(true)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("availability_settings")
+}
+
 model User {
   remote_jid         String    @id @map("remote_jid")
   interaction_date   DateTime? @default(now()) @map("interaction_date") @db.Timestamptz(6)
