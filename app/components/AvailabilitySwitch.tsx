@@ -101,7 +101,7 @@ export function AvailabilitySwitch() {
           }`}
         >
           <span
-            className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+            className={`absolute left-0 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
               available ? "translate-x-6" : "translate-x-1"
             }`}
           />
